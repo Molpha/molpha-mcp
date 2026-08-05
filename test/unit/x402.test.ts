@@ -14,8 +14,17 @@ import {
   deriveAgentEscrowAta,
   verifyX402FundingAccept,
   type AgentRequestAuthParams,
+  type ProviderSourceInput,
   type X402Accept
 } from "../../src/x402.js";
+
+const providerSource: ProviderSourceInput = {
+  providerId: "tickerlayer",
+  requiredPluginVersion: "^1.0.0",
+  operation: "crypto.agg.prev",
+  symbol: "BTCUSD",
+  response: { valueParser: "$.price" }
+};
 
 const defaultApiConfig = {
   url: "https://api.example.com/v1/finalized/rate",
@@ -1118,5 +1127,226 @@ describe("agentFetch", () => {
     ).rejects.toThrow(/feedId does not match/);
 
     expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects when both apiConfig and providerSource are supplied", async () => {
+    const config = makeConfig();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        { apiConfig: defaultApiConfig, providerSource, signaturesRequired: 1 }
+      )
+    ).rejects.toThrow(/Provide exactly one of apiConfig or providerSource/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects when neither apiConfig nor providerSource is supplied", async () => {
+    const config = makeConfig();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        { signaturesRequired: 1 } as never
+      )
+    ).rejects.toThrow(/apiConfig or providerSource is required/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("quotes feedId via providerSource before signing, then executes when already funded", async () => {
+    const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
+    const config = makeConfig({ gatewayPda });
+    const quotedFeedId = "ef".repeat(32);
+
+    let executeCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/status")) {
+        return jsonResponse(200, {
+          payer: signer.publicKey,
+          gateway: gatewayPda,
+          escrow,
+          exists: true,
+          ataAddress: escrowAta,
+          ataExists: true,
+          ataBalance: "5000000",
+          committedAmount: "0",
+          quotedNextPrice: "1000000",
+          unsettledRounds: 0
+        });
+      }
+
+      executeCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      if (executeCalls === 1) {
+        // The upfront quote call: unsigned, quote:true, providerSource present, no apiConfig.
+        expect(body.quote).toBe(true);
+        expect(body.providerSource).toEqual(providerSource);
+        expect(body.apiConfig).toBeUndefined();
+        expect(body.agent_request_auth_sig).toBeUndefined();
+        return jsonResponse(200, {
+          status: "quote",
+          data: {
+            feedId: quotedFeedId,
+            configHash: "ab".repeat(32),
+            timestamp: body.canonical_timestamp,
+            registryVersion: 1,
+            signaturesRequired: 1
+          }
+        });
+      }
+
+      // The real signed execute call.
+      expect(body.providerSource).toEqual(providerSource);
+      expect(body.apiConfig).toBeUndefined();
+      expect(body.amount).toBe(1000000);
+      expect(typeof body.agent_request_auth_sig).toBe("string");
+      return jsonResponse(200, {
+        status: "completed",
+        data: {
+          feedId: quotedFeedId,
+          value: "123.45",
+          valuePacked: "0".repeat(64),
+          timestamp: body.canonical_timestamp,
+          registryVersion: 1,
+          signaturesRequired: 1,
+          signersBitmap: "0".repeat(64),
+          s: "0".repeat(64),
+          commitmentAddr: "0".repeat(40),
+          fresh: true
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      { providerSource, signaturesRequired: 1 }
+    );
+
+    expect(result.value).toBe("123.45");
+    expect(result.feedId).toBe(quotedFeedId);
+    expect(executeCalls).toBe(2); // quote + signed execute (status doesn't count)
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("funds the escrow via providerSource discovery, reusing the quoted feedId", async () => {
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+    const config = makeConfig();
+    const quotedFeedId = "12".repeat(32);
+
+    let executeCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/status")) {
+        throw new Error("status unavailable");
+      }
+
+      executeCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      if (executeCalls === 1) {
+        expect(body.quote).toBe(true);
+        expect(body.providerSource).toEqual(providerSource);
+        return jsonResponse(200, {
+          status: "quote",
+          data: {
+            feedId: quotedFeedId,
+            configHash: "ab".repeat(32),
+            timestamp: body.canonical_timestamp,
+            registryVersion: 1,
+            signaturesRequired: 1
+          }
+        });
+      }
+
+      if (executeCalls === 2) {
+        // amount:0 discovery probe, now carrying providerSource instead of apiConfig.
+        expect(body.amount).toBe(0);
+        expect(body.providerSource).toEqual(providerSource);
+        expect(body.apiConfig).toBeUndefined();
+        return jsonResponse(402, {
+          x402Version: 1,
+          error: "payment required: escrow ATA underfunded",
+          accepts: [
+            makeAccept({
+              payer: String(signer.publicKey),
+              gateway: gatewayPubkey,
+              agent: escrow,
+              payTo: escrowAta,
+              feedId: quotedFeedId
+            })
+          ]
+        });
+      }
+
+      expect(body.amount).toBe(1000000);
+      expect(body.providerSource).toEqual(providerSource);
+      expect(typeof body.agent_request_auth_sig).toBe("string");
+      return jsonResponse(200, {
+        status: "completed",
+        data: {
+          feedId: quotedFeedId,
+          value: "7",
+          valuePacked: "0".repeat(64),
+          timestamp: body.canonical_timestamp,
+          registryVersion: 1,
+          signaturesRequired: 1,
+          signersBitmap: "0".repeat(64),
+          s: "0".repeat(64),
+          commitmentAddr: "0".repeat(40),
+          fresh: true
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      { providerSource, signaturesRequired: 1 }
+    );
+
+    expect(result.value).toBe("7");
+    expect(executeCalls).toBe(3); // quote + discovery probe + signed execute
+    expect(fakeConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("trusts a caller-provided feedId with providerSource and skips the quote call", async () => {
+    const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
+    const config = makeConfig({ gatewayPda });
+    const cachedFeedId = "34".repeat(32);
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        payer: signer.publicKey,
+        gateway: gatewayPda,
+        escrow,
+        exists: true,
+        ataAddress: escrowAta,
+        ataExists: true,
+        ataBalance: "5000000",
+        committedAmount: "0",
+        quotedNextPrice: "1000000",
+        unsettledRounds: 0
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      { providerSource, signaturesRequired: 1, feedId: cachedFeedId, dryRun: true }
+    );
+
+    expect(result.dryRun).toBe(true);
+    expect(result.feedId).toBe(cachedFeedId);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // status only — no quote call
   });
 });

@@ -39,10 +39,28 @@ export interface ApiConfigInput {
   valueTransform?: string | undefined;
 }
 
+/** A gateway-side provider-plugin source (e.g. TickerLayer), sent as an alternative to apiConfig. */
+export interface ProviderSourceInput {
+  providerId: string;
+  requiredPluginVersion: string;
+  operation: string;
+  symbol: string;
+  response: { valueParser: string; valueTransform?: string | undefined };
+  cachePolicy?: { visibility: string; ttlSeconds: number } | undefined;
+}
+
 export interface AgentFetchOptions {
-  apiConfig: ApiConfigInput;
+  /** Mutually exclusive with providerSource — exactly one is required. */
+  apiConfig?: ApiConfigInput;
+  /**
+   * A gateway-side provider-plugin source. feedId can't be derived locally
+   * for this (it depends on the plugin's resolved apiConfigHash, which only
+   * the gateway knows) — agentFetch quotes for it via an unsigned `quote:
+   * true` request when `feedId` is not also supplied here.
+   */
+  providerSource?: ProviderSourceInput;
   signaturesRequired: number;
-  /** When set, must match the feedId derived from apiConfig + signaturesRequired + payer. */
+  /** When set with apiConfig, must match the feedId derived from apiConfig + signaturesRequired + payer. When set with providerSource, trusted as-is (e.g. reused from a prior quote) to skip the quote round trip. */
   feedId?: string;
   /** Accepted for API symmetry with the subscription path; x402 rounds always run fresh (the gateway has no maxAge/cache concept for /v1/agent/execute). */
   maxAge?: number;
@@ -242,10 +260,26 @@ export async function agentFetch(
 ): Promise<Record<string, unknown>> {
   const { config, connection, signer, solana } = ctx;
   const payer = signer.publicKey;
-  const apiConfig = canonicalizeApiConfig(opts.apiConfig);
-  const apiConfigHash = deriveApiConfigHash(apiConfig);
-  const expectedFeedId = deriveFeedIdString(payer, apiConfigHash, opts.signaturesRequired);
-  assertFeedIdMatch(expectedFeedId, opts.feedId);
+
+  if (opts.apiConfig && opts.providerSource) {
+    throw new Error("Provide exactly one of apiConfig or providerSource, not both.");
+  }
+  if (!opts.apiConfig && !opts.providerSource) {
+    throw new Error("apiConfig or providerSource is required.");
+  }
+
+  const apiConfig = opts.apiConfig ? canonicalizeApiConfig(opts.apiConfig) : undefined;
+  // Spread into every /v1/agent/execute body below in place of a bare
+  // `apiConfig` field — the gateway accepts exactly one of the two.
+  const sourceField: Record<string, unknown> = apiConfig
+    ? { apiConfig }
+    : { providerSource: opts.providerSource };
+
+  if (apiConfig) {
+    const apiConfigHash = deriveApiConfigHash(apiConfig);
+    const derived = deriveFeedIdString(payer, apiConfigHash, opts.signaturesRequired);
+    assertFeedIdMatch(derived, opts.feedId);
+  }
 
   const endpointKey = config.gatewayEndpoints[0] ?? "";
   const programId = getMolphaProgramId();
@@ -256,6 +290,20 @@ export async function agentFetch(
   const usdcMint = address(String(usdcMintRaw));
 
   const registryVersion = await requireMethod<[], Promise<number>>(solana, "getRegistryVersion")();
+
+  // apiConfig: feedId is always derivable locally, no gateway round trip.
+  // providerSource: only the gateway can resolve it, so quote once, up
+  // front (skipped when the caller already supplied one, e.g. reusing a
+  // prior quote) — trusted as-is, same as a cached feedId for BYOK.
+  const expectedFeedId = apiConfig
+    ? deriveFeedIdString(payer, deriveApiConfigHash(apiConfig), opts.signaturesRequired)
+    : (opts.feedId ??
+      (await quoteProviderSourceFeedId(config.gatewayEndpoints, {
+        payer,
+        providerSource: opts.providerSource!,
+        signaturesRequired: opts.signaturesRequired,
+        registryVersion
+      })));
 
   // Status is advisory, so a failure must not abort the round — but it is the
   // only source of the settling gateway PDA when nothing is pinned or cached,
@@ -292,7 +340,7 @@ export async function agentFetch(
     if (priceAtomic === undefined || gatewayPda === undefined) {
       const discovery = await discover(config, {
         payer,
-        apiConfig,
+        source: sourceField,
         signaturesRequired: opts.signaturesRequired,
         registryVersion,
         timestamp: Math.floor(Date.now() / 1000)
@@ -374,7 +422,7 @@ export async function agentFetch(
         timestamp = Math.floor(Date.now() / 1000);
         const discovery = await discover(config, {
           payer,
-          apiConfig,
+          source: sourceField,
           signaturesRequired: opts.signaturesRequired,
           registryVersion,
           timestamp
@@ -446,7 +494,7 @@ export async function agentFetch(
       amount: Number(priceAtomic),
       registry_version: registryVersion,
       agent_request_auth_sig: bytesToHex0xLocal(sig),
-      apiConfig
+      ...sourceField
     });
 
     if (outcome.kind === "ok") {
@@ -668,7 +716,8 @@ async function fundEscrow(
 
 interface DiscoverArgs {
   payer: Address;
-  apiConfig: Record<string, unknown>;
+  /** Either `{ apiConfig }` or `{ providerSource }` — see agentFetch's sourceField. */
+  source: Record<string, unknown>;
   signaturesRequired: number;
   registryVersion: number;
   timestamp: number;
@@ -691,7 +740,7 @@ async function discover(config: MolphaConfig, args: DiscoverArgs): Promise<Disco
     signatures_required: args.signaturesRequired,
     amount: 0,
     registry_version: args.registryVersion,
-    apiConfig: args.apiConfig
+    ...args.source
   });
 
   if (outcome.kind === "amount_mismatch" && outcome.quotedPrice !== undefined) {
@@ -712,6 +761,51 @@ async function discover(config: MolphaConfig, args: DiscoverArgs): Promise<Disco
   }
 
   return { kind: "quote", accept };
+}
+
+interface QuoteProviderSourceFeedIdArgs {
+  payer: Address;
+  providerSource: ProviderSourceInput;
+  signaturesRequired: number;
+  registryVersion: number;
+}
+
+/**
+ * Learn the feedId a providerSource resolves to, without executing a round or
+ * touching the escrow/funding gate: an unsigned, single-shot `quote: true`
+ * POST. The gateway resolves the provider before checking funding, so this
+ * works regardless of escrow state — unlike the `amount: 0` discovery probe
+ * `discover()` uses, whose "already funded" 400 outcome carries a price but
+ * not a feedId.
+ */
+async function quoteProviderSourceFeedId(
+  endpoints: string[],
+  args: QuoteProviderSourceFeedIdArgs
+): Promise<string> {
+  const outcome = await postAgentExecute(endpoints, {
+    payer: args.payer,
+    canonical_timestamp: Math.floor(Date.now() / 1000),
+    signatures_required: args.signaturesRequired,
+    registry_version: args.registryVersion,
+    providerSource: args.providerSource,
+    quote: true
+  });
+
+  if (outcome.kind !== "ok") {
+    throw new Error(
+      `providerSource quote failed (expected a quote response), got ${outcome.kind}: ${
+        "message" in outcome ? outcome.message : ""
+      }`
+    );
+  }
+
+  const data = outcome.body.data as Record<string, unknown> | undefined;
+  const feedId = data?.feedId;
+  if (outcome.body.status !== "quote" || typeof feedId !== "string" || !feedId) {
+    throw new Error(`gateway returned an unexpected providerSource quote response: ${JSON.stringify(outcome.body)}`);
+  }
+
+  return feedId;
 }
 
 type PostOutcome =

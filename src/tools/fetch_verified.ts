@@ -11,11 +11,67 @@ import { prepareSignedResult, submitSignedResult } from "../submit.js";
 import { readSubscriptionStatus } from "../subscription.js";
 import { buildVerifierArgsForChains, type ChainTarget } from "../verifiers.js";
 import { agentFetch } from "../x402.js";
-import { apiConfigSchema } from "./schemas.js";
+import { apiConfigSchema, providerSourceSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
 const chainSchema = z.enum(["evm", "starknet", "solana"]);
 const paymentSchema = z.enum(["auto", "subscription", "x402"]);
+
+/**
+ * Validates the apiConfig/providerSource choice and payment-path
+ * restrictions shared by every branch of the tool handler below.
+ * Exported for direct unit testing.
+ */
+export function validateFetchVerifiedInput({
+  apiConfig,
+  providerSource,
+  encryptSecrets,
+  resolvedPayment
+}: {
+  apiConfig: z.infer<typeof apiConfigSchema> | undefined;
+  providerSource: z.infer<typeof providerSourceSchema> | undefined;
+  encryptSecrets: Record<string, string> | undefined;
+  resolvedPayment: "subscription" | "x402";
+}): void {
+  if (apiConfig && providerSource) {
+    throw new Error("Provide exactly one of apiConfig or providerSource, not both.");
+  }
+  if (!apiConfig && !providerSource) {
+    throw new Error("apiConfig or providerSource is required.");
+  }
+  if (resolvedPayment === "x402" && encryptSecrets) {
+    throw new Error(
+      "encryptSecrets is not yet supported on the x402 payment path; use payment: \"subscription\", or omit encryptSecrets."
+    );
+  }
+}
+
+/**
+ * feedId is only derivable locally for a BYOK apiConfig. A providerSource
+ * caller can't compute it (it depends on the plugin's resolved
+ * apiConfigHash, which only the gateway knows) — `requestSignedData` quotes
+ * for it when omitted here. A caller may still pass `feedId` explicitly
+ * alongside `providerSource` (e.g. reused from a prior quote) to skip that.
+ * Exported for direct unit testing.
+ */
+export function resolveFetchFeedId({
+  feedId,
+  apiConfig,
+  providerSource,
+  signaturesRequired,
+  owner
+}: {
+  feedId: string | undefined;
+  apiConfig: ApiConfigLike | undefined;
+  providerSource: z.infer<typeof providerSourceSchema> | undefined;
+  signaturesRequired: number;
+  owner: Address;
+}): string | undefined {
+  if (providerSource) {
+    return feedId;
+  }
+  return resolveFeedId(feedId, apiConfig!, signaturesRequired, owner);
+}
 
 export function registerFetchVerifiedTool(server: ToolServer): void {
   server.registerTool(
@@ -23,9 +79,10 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
     {
       title: "Fetch verified Molpha data",
       description:
-        "Trigger a signing round for a feed and return the self-contained signed payload PLUS prebuilt verifier arguments for each requested chain. The signed payload is the trust anchor — verify it or forward it to a contract; do not consume `value` alone. Only the `solana` leg can be settled from this server (via `autoSubmit`, or by passing this tool's output to molpha_execute unmodified); `evm` and `starknet` return contract-ready calldata only — executing verify() there is the agent's job by design (see molpha_verify). `payment` selects how the round is paid for: \"subscription\" uses the caller's active USDC subscription (fails if inactive), \"x402\" self-funds a per-request escrow (auto-funds up to the MOLPHA_X402_MAX_PRICE_USDC / MOLPHA_X402_MAX_SPEND_PER_DAY_USDC caps), and \"auto\" (default) uses the subscription when active and falls back to x402 otherwise. feedId is derived from apiConfig + signaturesRequired + the signer's pubkey when omitted (see molpha_derive_feed).",
+        "Trigger a signing round for a feed and return the self-contained signed payload PLUS prebuilt verifier arguments for each requested chain. The signed payload is the trust anchor — verify it or forward it to a contract; do not consume `value` alone. Only the `solana` leg can be settled from this server (via `autoSubmit`, or by passing this tool's output to molpha_execute unmodified); `evm` and `starknet` return contract-ready calldata only — executing verify() there is the agent's job by design (see molpha_verify). `payment` selects how the round is paid for: \"subscription\" uses the caller's active USDC subscription (fails if inactive), \"x402\" self-funds a per-request escrow (auto-funds up to the MOLPHA_X402_MAX_PRICE_USDC / MOLPHA_X402_MAX_SPEND_PER_DAY_USDC caps), and \"auto\" (default) uses the subscription when active and falls back to x402 otherwise. Provide exactly one of `apiConfig` (BYOK) or `providerSource` (a gateway-side provider plugin, e.g. TickerLayer — no credential required). feedId is derived from apiConfig + signaturesRequired + the signer's pubkey when omitted for BYOK (see molpha_derive_feed); for providerSource it is resolved server-side via a quote round trip instead (on both payment paths).",
       inputSchema: {
-        apiConfig: apiConfigSchema,
+        apiConfig: apiConfigSchema.optional(),
+        providerSource: providerSourceSchema.optional(),
         signaturesRequired: z.number().int().positive().max(255).default(1),
         feedId: z.string().min(1).optional(),
         maxAge: z.number().int().nonnegative().optional(),
@@ -44,6 +101,7 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
     toolHandler(async (
       {
         apiConfig,
+        providerSource,
         signaturesRequired,
         feedId,
         maxAge,
@@ -53,7 +111,8 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
         autoSubmit = false,
         dryRun
       }: {
-        apiConfig: z.infer<typeof apiConfigSchema>;
+        apiConfig?: z.infer<typeof apiConfigSchema>;
+        providerSource?: z.infer<typeof providerSourceSchema>;
         signaturesRequired: number;
         feedId?: string;
         maxAge?: number;
@@ -66,7 +125,6 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
     ) => {
       const { config, gateway, solana, signer, connection } = await getMolphaContext();
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
-      const resolvedFeedId = resolveFeedId(feedId, apiConfig, signaturesRequired, signer.publicKey);
 
       if (autoSubmit && !chains.includes("solana")) {
         throw new Error(
@@ -77,11 +135,15 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
       const resolvedPayment =
         payment === "auto" ? (await readSubscriptionStatus(solana)).active ? "subscription" : "x402" : payment;
 
-      if (resolvedPayment === "x402" && encryptSecrets) {
-        throw new Error(
-          "encryptSecrets is not yet supported on the x402 payment path; use payment: \"subscription\", or omit encryptSecrets."
-        );
-      }
+      validateFetchVerifiedInput({ apiConfig, providerSource, encryptSecrets, resolvedPayment });
+
+      const resolvedFeedId = resolveFetchFeedId({
+        feedId,
+        apiConfig,
+        providerSource,
+        signaturesRequired,
+        owner: signer.publicKey
+      });
 
       if (resolvedPayment === "subscription") {
         if (isDryRun) {
@@ -100,7 +162,7 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
           "requestSignedData"
         );
         const result = await requestSignedData({
-          feedId: normalizeFeedId(resolvedFeedId),
+          feedId: normalizeFeedId(resolvedFeedId!),
           signaturesRequired,
           apiConfig,
           ...(maxAge !== undefined ? { maxAge } : {}),
@@ -113,9 +175,9 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
       const result = await agentFetch(
         { config, connection, signer, solana },
         {
-          apiConfig,
+          ...(apiConfig ? { apiConfig } : { providerSource: providerSource! }),
           signaturesRequired,
-          feedId: resolvedFeedId,
+          ...(resolvedFeedId ? { feedId: resolvedFeedId } : {}),
           ...(maxAge !== undefined ? { maxAge } : {}),
           ...(isDryRun ? { dryRun: true } : {})
         }
