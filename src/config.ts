@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { getSdkExport } from "./sdk.js";
 
 const DEFAULT_SOLANA_RPC = "https://api.devnet.solana.com";
-const FALLBACK_GATEWAY_ENDPOINT = "https://dev-gateway.molpha.io";
+const FALLBACK_GATEWAY_ENDPOINT = "http://188.166.249.79:8080";
 
 export interface GuardrailConfig {
   maxExecutesPerDay: number;
@@ -35,7 +35,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
 
   return {
     gatewayEndpoints: parseCsv(
-      resolveEnvString(env.GATEWAY_ENDPOINTS) ?? sdkDefaultGateway ?? FALLBACK_GATEWAY_ENDPOINT
+      // mcp's own default takes precedence over the SDK's — the SDK export
+      // is only a fallback-of-a-fallback for when mcp has no opinion.
+      resolveEnvString(env.GATEWAY_ENDPOINTS) ?? FALLBACK_GATEWAY_ENDPOINT ?? sdkDefaultGateway
     ),
     solanaRpc: resolveEnvString(env.SOLANA_RPC) ?? DEFAULT_SOLANA_RPC,
     ownerKeypair: resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR),
