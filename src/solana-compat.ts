@@ -1,5 +1,5 @@
 import { isSignerRole, isWritableRole, type Address, type Instruction } from "@solana/kit";
-import { PublicKey, TransactionInstruction } from "@solana/web3.js";
+import { PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 
 /**
  * Isolated legacy-interop boundary: @molpha/sdk, @turnkey/solana, and
@@ -21,4 +21,18 @@ export function toLegacyInstruction(instruction: Instruction): TransactionInstru
     })),
     data: Buffer.from(instruction.data ?? new Uint8Array())
   });
+}
+
+/** An unsigned v0 transaction in the web3.js form `MolphaSigner` backends sign. */
+export function toLegacyV0Transaction(
+  feePayer: Address,
+  recentBlockhash: string,
+  instructions: Instruction[]
+): VersionedTransaction {
+  const message = new TransactionMessage({
+    payerKey: toLegacyPublicKey(feePayer),
+    recentBlockhash,
+    instructions: instructions.map(toLegacyInstruction)
+  }).compileToV0Message();
+  return new VersionedTransaction(message);
 }

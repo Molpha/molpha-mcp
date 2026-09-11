@@ -23,6 +23,18 @@ export function normalizeError(error: unknown): NormalizedToolError {
   const status = getStatus(error);
   const message = error instanceof Error ? error.message : String(error);
 
+  // Checked first: a payment went out and the gateway's answer does not say
+  // whether it settled, whatever HTTP status that answer carried.
+  if (error instanceof Error && error.name === "X402PaymentOutcomeUnknownError") {
+    return {
+      code: "payment_outcome_unknown",
+      message,
+      details: (error as Error & { reconciliation?: unknown }).reconciliation,
+      remediation:
+        "Do not pay for this round again yet: the signed USDC transfer may have settled. Its blockhash expires within about two minutes; after that, look for a transfer to details.payTo carrying details.memo in the signer's USDC account before retrying."
+    };
+  }
+
   if (status === 400) {
     return withStatus("invalid_request", message, status);
   }
@@ -40,7 +52,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return {
       ...withStatus("payment_required", message, status),
       remediation:
-        "Fund the x402 escrow (see get_agent_status) and retry, or use execute_subscription_round with an active subscription.",
+        "The gateway rejected the x402 payment (see details.error). Check the signer's USDC balance and the x402 caps with get_agent_status, then retry, or use execute_subscription_round with an active subscription.",
       ...(payload !== undefined ? { details: payload } : {})
     };
   }
@@ -73,7 +85,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
       code: "invalid_config",
       message,
       remediation:
-        "Check PRIVY_WALLET_ADDRESS / TURNKEY_WALLET_ADDRESS, GATEWAY_AUTHORITIES, and MOLPHA_X402_GATEWAY_PDA in your MCP env. Use real Solana devnet pubkeys — not placeholders like <base58-solana-address>."
+        "Check PRIVY_WALLET_ADDRESS / TURNKEY_WALLET_ADDRESS and GATEWAY_AUTHORITIES in your MCP env. Use real Solana devnet pubkeys — not placeholders like <base58-solana-address>."
     };
   }
 

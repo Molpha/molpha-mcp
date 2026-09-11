@@ -13,12 +13,10 @@ export interface GuardrailConfig {
 }
 
 export interface X402Config {
-  /** Per-round cap in USDC base units (6 decimals). Refuse funding above this. */
+  /** Per-round cap in USDC base units (6 decimals). Refuse to pay above this. */
   maxPriceUsdcAtomic: bigint;
   /** Daily cumulative spend cap in USDC base units. */
   maxSpendPerDayUsdcAtomic: bigint;
-  /** Optional override for the settling gateway PDA (base58), when known out-of-band. */
-  gatewayPda: string | undefined;
 }
 
 export interface MolphaConfig {
@@ -61,8 +59,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
     },
     x402: {
       maxPriceUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_PRICE_USDC), 1_000_000n),
-      maxSpendPerDayUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_SPEND_PER_DAY_USDC), 10_000_000n),
-      gatewayPda: resolveEnvString(env.MOLPHA_X402_GATEWAY_PDA)
+      maxSpendPerDayUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_SPEND_PER_DAY_USDC), 10_000_000n)
     }
   };
 }

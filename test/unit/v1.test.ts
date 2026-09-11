@@ -229,7 +229,7 @@ describe("normalizeError", () => {
   });
 
   it("maps a 402 status to payment_required with remediation", () => {
-    const error = Object.assign(new Error("payment required: escrow ATA underfunded"), { status: 402 });
+    const error = Object.assign(new Error("x402 payment rejected by the gateway: invalid payment"), { status: 402 });
     const normalized = normalizeError(error);
     expect(normalized.code).toBe("payment_required");
     expect(normalized.remediation).toContain("x402");
@@ -261,8 +261,7 @@ describe("buildVerifierArgsForChains", () => {
     guardrails: { maxExecutesPerDay: 100, dryRunDefault: false },
     x402: {
       maxPriceUsdcAtomic: 1_000_000n,
-      maxSpendPerDayUsdcAtomic: 10_000_000n,
-      gatewayPda: undefined
+      maxSpendPerDayUsdcAtomic: 10_000_000n
     }
   };
 

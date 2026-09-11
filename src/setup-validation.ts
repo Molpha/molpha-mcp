@@ -39,7 +39,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
         ok: false,
         message: "OWNER_KEYPAIR is required for SIGNER_BACKEND=memory"
       });
-      return appendOptionalPubkeyChecks(checks, env);
+      return checks;
     }
 
     if (isInlineKeypair(ownerKeypair)) {
@@ -60,7 +60,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
               : "OWNER_KEYPAIR inline JSON is invalid"
         });
       }
-      return appendOptionalPubkeyChecks(checks, env);
+      return checks;
     }
 
     const resolved = resolveKeypairPath(ownerKeypair);
@@ -70,7 +70,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
         ok: false,
         message: `OWNER_KEYPAIR file not found: ${resolved}`
       });
-      return appendOptionalPubkeyChecks(checks, env);
+      return checks;
     }
 
     checks.push({
@@ -78,7 +78,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
       ok: true,
       message: `OWNER_KEYPAIR=${resolved}`
     });
-    return appendOptionalPubkeyChecks(checks, env);
+    return checks;
   }
 
   const provider = resolveEnvString(env.KEYCHAIN_BACKEND);
@@ -134,19 +134,6 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
       name: name.toLowerCase(),
       ok: Boolean(value && value.trim().length > 0),
       message: value && value.trim().length > 0 ? `${name} is set` : `${name} is required for ${provider}`
-    });
-  }
-
-  for (const [name, value] of [["MOLPHA_X402_GATEWAY_PDA", resolveEnvString(env.MOLPHA_X402_GATEWAY_PDA)]] as const) {
-    if (!value?.trim()) {
-      continue;
-    }
-
-    const validation = validateSolanaPubkey(value, name);
-    checks.push({
-      name: name.toLowerCase(),
-      ok: validation.ok,
-      message: validation.ok ? `${name} is a valid Solana address` : validation.message
     });
   }
 
@@ -301,10 +288,6 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
     MOLPHA_X402_MAX_SPEND_PER_DAY_USDC: formatUsdcAtomic(config.x402.maxSpendPerDayUsdcAtomic)
   };
 
-  if (config.x402.gatewayPda) {
-    out.MOLPHA_X402_GATEWAY_PDA = config.x402.gatewayPda;
-  }
-
   const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
   if (backend === "memory") {
     out.SIGNER_BACKEND = "memory";
@@ -379,23 +362,6 @@ export function buildCodexTomlSnippet(repoRoot = process.cwd(), env: NodeJS.Proc
   }
 
   return `${lines.join("\n")}\n`;
-}
-
-function appendOptionalPubkeyChecks(checks: SetupCheck[], env: NodeJS.ProcessEnv): SetupCheck[] {
-  for (const [name, value] of [["MOLPHA_X402_GATEWAY_PDA", resolveEnvString(env.MOLPHA_X402_GATEWAY_PDA)]] as const) {
-    if (!value?.trim()) {
-      continue;
-    }
-
-    const validation = validateSolanaPubkey(value, name);
-    checks.push({
-      name: name.toLowerCase(),
-      ok: validation.ok,
-      message: validation.ok ? `${name} is a valid Solana address` : validation.message
-    });
-  }
-
-  return checks;
 }
 
 function resolveKeypairPath(path: string): string {

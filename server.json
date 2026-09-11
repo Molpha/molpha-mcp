@@ -134,20 +134,15 @@
         },
         {
           "name": "MOLPHA_X402_MAX_PRICE_USDC",
-          "description": "Refuse to fund an x402 round priced above this amount (decimal USDC).",
+          "description": "Refuse to pay for an x402 round priced above this amount (decimal USDC).",
           "isRequired": false,
           "default": "1"
         },
         {
           "name": "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC",
-          "description": "Process-local daily x402 spend cap (decimal USDC).",
+          "description": "Process-local daily cap on USDC signed for x402 rounds (decimal USDC).",
           "isRequired": false,
           "default": "10"
-        },
-        {
-          "name": "MOLPHA_X402_GATEWAY_PDA",
-          "description": "Optional settling gateway PDA (base58) to skip discovery when the escrow is already funded.",
-          "isRequired": false
         }
       ]
     }

@@ -4,7 +4,7 @@
   "display_name": "Molpha MCP",
   "version": "0.1.1",
   "description": "MCP server that lets AI agents create, fetch, verify, and publish Molpha oracle data.",
-  "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL and may consume subscription quota or x402 escrow funds unless dry-run mode is enabled.",
+  "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL, and round tools may consume subscription quota or pay USDC for x402 rounds, unless dry-run mode is enabled.",
   "author": {
     "name": "Molpha",
     "url": "https://molpha.io"
@@ -54,8 +54,7 @@
         "MOLPHA_MAX_EXECUTES_PER_DAY": "${user_config.max_executes_per_day}",
         "MOLPHA_DRY_RUN": "${user_config.dry_run}",
         "MOLPHA_X402_MAX_PRICE_USDC": "${user_config.x402_max_price_usdc}",
-        "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC": "${user_config.x402_max_spend_per_day_usdc}",
-        "MOLPHA_X402_GATEWAY_PDA": "${user_config.x402_gateway_pda}"
+        "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC": "${user_config.x402_max_spend_per_day_usdc}"
       }
     }
   },
@@ -78,7 +77,7 @@
     },
     {
       "name": "get_agent_status",
-      "description": "Read the x402 agent escrow balance, committed amount, and quoted next price."
+      "description": "Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget."
     },
     {
       "name": "execute_subscription_round",
@@ -235,21 +234,15 @@
     "x402_max_price_usdc": {
       "type": "string",
       "title": "x402 max price (USDC)",
-      "description": "Refuse to fund an x402 round priced above this amount (decimal USDC).",
+      "description": "Refuse to pay for an x402 round priced above this amount (decimal USDC).",
       "default": "1",
       "required": false
     },
     "x402_max_spend_per_day_usdc": {
       "type": "string",
       "title": "x402 max spend per day (USDC)",
-      "description": "Process-local daily x402 spend cap (decimal USDC).",
+      "description": "Process-local daily cap on USDC signed for x402 rounds (decimal USDC).",
       "default": "10",
-      "required": false
-    },
-    "x402_gateway_pda": {
-      "type": "string",
-      "title": "x402 gateway PDA",
-      "description": "Optional settling gateway PDA (base58) to skip discovery when the escrow is already funded.",
       "required": false
     }
   }
