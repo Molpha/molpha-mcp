@@ -58,7 +58,7 @@
   "dependencies": {
     "@anchor-lang/core": "^1.1.2",
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@molpha/sdk": "0.2.0-dev-20260911113923",
+    "@molpha/sdk": "0.2.0-dev-20260911175245",
     "@noble/hashes": "^1.8.0",
     "@solana-program/token": "^0.15.0",
     "@solana/kit": "^7.0.0",
