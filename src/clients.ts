@@ -44,12 +44,23 @@ export function createGateway(
   const Gateway = requireSdkExport<new (...args: unknown[]) => Record<string, unknown>>("MolphaGateway");
   // SDK Signer type = (message: Uint8Array) => Promise<Uint8Array>
   const defaultSigner = (msg: Uint8Array) => signer.signMessage(msg);
+  // Request auth binds each gateway's PDA; without a configured authority the SDK
+  // looks it up via GET /v1/info, which not every gateway serves.
+  const endpoints = config.gatewayEndpoints.map((url, index) => {
+    const gatewayAuthority = config.gatewayAuthorities[index];
+    return gatewayAuthority ? { url, gatewayAuthority } : url;
+  });
 
   return new Gateway(
-    config.gatewayEndpoints,
+    endpoints,
     () => requireMethod<[], Promise<Record<string, unknown>>>(solana, "getRegistrySelectionConfig")(),
     defaultSigner,
-    signer.publicKey
+    {
+      defaultSubscriptionOwner: signer.publicKey,
+      // Private API secrets are only encrypted to node keys that match the on-chain registry.
+      verifyNodeKeys: (args: unknown) =>
+        requireMethod<[unknown], Promise<void>>(solana, "verifyNodeKeysForPrivateApi")(args)
+    }
   );
 }
 

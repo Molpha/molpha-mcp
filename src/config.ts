@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { getSdkExport } from "./sdk.js";
+import { parseSolanaPubkey } from "./solana-address.js";
 
 const DEFAULT_SOLANA_RPC = "https://api.devnet.solana.com";
 const FALLBACK_GATEWAY_ENDPOINT = "https://dev-gateway.molpha.io";
@@ -22,6 +23,11 @@ export interface X402Config {
 
 export interface MolphaConfig {
   gatewayEndpoints: string[];
+  /**
+   * Base58 authority per `gatewayEndpoints` entry. Request auth binds the
+   * gateway's PDA; `undefined` leaves the SDK to discover it via `GET /v1/info`.
+   */
+  gatewayAuthorities: Array<string | undefined>;
   solanaRpc: string;
   ownerKeypair: string | undefined;
   evmNetworks: string[];
@@ -32,10 +38,15 @@ export interface MolphaConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
   const sdkDefaultGateway = getSdkExport<string>("DEFAULT_GATEWAY_ENDPOINT");
+  const gatewayEndpoints = parseCsv(
+    resolveEnvString(env.GATEWAY_ENDPOINTS) ?? sdkDefaultGateway ?? FALLBACK_GATEWAY_ENDPOINT
+  );
 
   return {
-    gatewayEndpoints: parseCsv(
-      resolveEnvString(env.GATEWAY_ENDPOINTS) ?? sdkDefaultGateway ?? FALLBACK_GATEWAY_ENDPOINT
+    gatewayEndpoints,
+    gatewayAuthorities: parseGatewayAuthorities(
+      resolveEnvString(env.GATEWAY_AUTHORITIES),
+      gatewayEndpoints.length
     ),
     solanaRpc: resolveEnvString(env.SOLANA_RPC) ?? DEFAULT_SOLANA_RPC,
     ownerKeypair: resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR),
@@ -85,6 +96,28 @@ function parseCsv(value: string): string[] {
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+/**
+ * GATEWAY_AUTHORITIES pairs with GATEWAY_ENDPOINTS by position; an empty entry
+ * means "discover it". A shifted list would sign every request for the wrong
+ * gateway, so the counts must match exactly.
+ */
+function parseGatewayAuthorities(value: string | undefined, endpointCount: number): Array<string | undefined> {
+  if (!value) {
+    return Array.from({ length: endpointCount }, () => undefined);
+  }
+
+  const entries = value.split(",").map((part) => part.trim());
+  if (entries.length !== endpointCount) {
+    throw new Error(
+      `GATEWAY_AUTHORITIES has ${entries.length} entries but GATEWAY_ENDPOINTS has ${endpointCount}; list one authority per endpoint, in the same order (leave an entry empty to discover it via GET /v1/info)`
+    );
+  }
+
+  return entries.map((entry, index) =>
+    entry ? String(parseSolanaPubkey(entry, `GATEWAY_AUTHORITIES[${index}]`)) : undefined
+  );
 }
 
 /** Parses a decimal USDC amount (e.g. "1.5") into base units (6 decimals). */

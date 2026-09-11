@@ -41,5 +41,5 @@ console.log("Suggested Codex config.toml snippet:\n");
 console.log(buildCodexTomlSnippet());
 
 console.log(
-  "Next: add the JSON to ~/.cursor/mcp.json or Claude Desktop config, restart the client, and call molpha_get_capabilities."
+  "Next: add the JSON to ~/.cursor/mcp.json or Claude Desktop config, restart the client, and call get_capabilities."
 );

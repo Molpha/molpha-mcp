@@ -2,8 +2,12 @@
  * x402 self-funded pay-per-request client for `POST /v1/agent/execute` and
  * `GET /v1/agent/{payer}/status`. The SDK has no x402 support (it only
  * covers the subscription round path), so this talks to the gateway
- * directly, mirroring the gateway's own Go implementation
- * (gateway/internal/gateway/features/agentexec).
+ * directly, speaking the escrow-based agent protocol: an on-chain agent
+ * escrow the payer funds, plus a signed AgentRequestAuth per round.
+ *
+ * Gateways on x402 v2 replace that protocol — payment rides in a
+ * facilitator-verified `PAYMENT-SIGNATURE` header and status moves to
+ * `GET /v1/agent/status` — and reject this client until it is ported.
  */
 import { createHash } from "node:crypto";
 import { address, getAddressEncoder, getProgramDerivedAddress, type Address, type TransactionSigner } from "@solana/kit";
@@ -14,7 +18,7 @@ import {
   TOKEN_PROGRAM_ADDRESS
 } from "@solana-program/token";
 import { Transaction, type Connection } from "@solana/web3.js";
-import { canonicalizeApiConfig, deriveApiConfigHash, deriveFeedIdString } from "./apiconfig.js";
+import { canonicalizeApiConfig, deriveSourceId } from "./apiconfig.js";
 import { getMolphaProgramId, requireMethod } from "./clients.js";
 import { type MolphaConfig } from "./config.js";
 import {
@@ -23,7 +27,7 @@ import {
   checkX402SpendCap,
   recordX402Spend
 } from "./guardrails.js";
-import { normalizeFeedId } from "./hex.js";
+import { normalizeSourceId } from "./hex.js";
 import { requireSdkExport } from "./sdk.js";
 import { toLegacyInstruction, toLegacyPublicKey } from "./solana-compat.js";
 import type { MolphaSigner } from "./signer/types.js";
@@ -42,8 +46,8 @@ export interface ApiConfigInput {
 export interface AgentFetchOptions {
   apiConfig: ApiConfigInput;
   signaturesRequired: number;
-  /** When set, must match the feedId derived from apiConfig + signaturesRequired + payer. */
-  feedId?: string;
+  /** When set, must match the sourceId derived from apiConfig. */
+  sourceId?: string;
   /** Accepted for API symmetry with the subscription path; x402 rounds always run fresh (the gateway has no maxAge/cache concept for /v1/agent/execute). */
   maxAge?: number;
   dryRun?: boolean;
@@ -52,7 +56,7 @@ export interface AgentFetchOptions {
 export interface X402Extra {
   agent: string;
   gateway: string;
-  feedId: string;
+  sourceId: string;
   canonicalTimestamp: number;
   amount: string;
   payer: string;
@@ -243,9 +247,8 @@ export async function agentFetch(
   const { config, connection, signer, solana } = ctx;
   const payer = signer.publicKey;
   const apiConfig = canonicalizeApiConfig(opts.apiConfig);
-  const apiConfigHash = deriveApiConfigHash(apiConfig);
-  const expectedFeedId = deriveFeedIdString(payer, apiConfigHash, opts.signaturesRequired);
-  assertFeedIdMatch(expectedFeedId, opts.feedId);
+  const expectedSourceId = normalizeSourceId(deriveSourceId(opts.apiConfig).sourceId);
+  assertSourceIdMatch(expectedSourceId, opts.sourceId);
 
   const endpointKey = config.gatewayEndpoints[0] ?? "";
   const programId = getMolphaProgramId();
@@ -308,11 +311,11 @@ export async function agentFetch(
             ? String(await deriveAgentEscrowAta(address(escrow), usdcMint))
             : "unknown";
         checkX402PerRoundCap(discovery.roundPrice, config.x402.maxPriceUsdcAtomic);
-        return dryRunPreview(expectedFeedId, escrow, ata, discovery.roundPrice, discovery.roundPrice);
+        return dryRunPreview(expectedSourceId, escrow, ata, discovery.roundPrice, discovery.roundPrice);
       }
 
       const verified = await verifyX402FundingAccept(discovery.accept, fundingVerifyCtx(gatewayPda));
-      assertFeedIdMatch(expectedFeedId, discovery.accept.extra.feedId);
+      assertSourceIdMatch(expectedSourceId, discovery.accept.extra.sourceId);
       cacheGatewayPda(endpointKey, String(verified.gateway));
       availableAtomic = bigIntMax(
         0n,
@@ -320,7 +323,7 @@ export async function agentFetch(
           BigInt(discovery.accept.extra.committedAmount)
       );
       return dryRunPreview(
-        expectedFeedId,
+        expectedSourceId,
         String(verified.escrow),
         String(verified.escrowAta),
         verified.roundPrice,
@@ -334,7 +337,7 @@ export async function agentFetch(
         : (status?.ataAddress ?? "unknown");
 
     return dryRunPreview(
-      expectedFeedId,
+      expectedSourceId,
       escrowStr || "unknown",
       escrowAta,
       priceAtomic,
@@ -343,7 +346,7 @@ export async function agentFetch(
   }
 
   let timestamp = Math.floor(Date.now() / 1000);
-  let feedIdHex = expectedFeedId;
+  let sourceIdHex = expectedSourceId;
   let lastPaymentRequired: X402PaymentRequiredBody | undefined;
   let walletSpendRecordedForRound = false;
 
@@ -390,10 +393,10 @@ export async function agentFetch(
           priceAtomic = discovery.roundPrice;
           availableAtomic = discovery.roundPrice;
           escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
-          feedIdHex = expectedFeedId;
+          sourceIdHex = expectedSourceId;
         } else {
           const verified = await verifyX402FundingAccept(discovery.accept, fundingVerifyCtx(gatewayPda));
-          assertFeedIdMatch(expectedFeedId, discovery.accept.extra.feedId);
+          assertSourceIdMatch(expectedSourceId, discovery.accept.extra.sourceId);
           gatewayPda = String(verified.gateway);
           cacheGatewayPda(endpointKey, gatewayPda);
           priceAtomic = verified.roundPrice;
@@ -410,7 +413,7 @@ export async function agentFetch(
           }
 
           timestamp = discovery.accept.extra.canonicalTimestamp;
-          feedIdHex = expectedFeedId;
+          sourceIdHex = expectedSourceId;
           escrowStr = String(verified.escrow);
           availableAtomic = priceAtomic;
         }
@@ -434,7 +437,7 @@ export async function agentFetch(
     const sig = await signAgentRequestAuth(signer, {
       agent: address(escrowStr),
       gateway: address(gatewayPda),
-      feedId: hexToBytesLocal(feedIdHex),
+      sourceId: hexToBytesLocal(sourceIdHex),
       canonicalTimestamp: timestamp,
       amount: priceAtomic
     });
@@ -537,7 +540,7 @@ export async function agentFetch(
 }
 
 function dryRunPreview(
-  feedId: string,
+  sourceId: string,
   escrow: string,
   ata: string,
   priceAtomic: bigint,
@@ -547,7 +550,7 @@ function dryRunPreview(
   return {
     dryRun: true,
     action: "x402_agent_execute",
-    feedId,
+    sourceId,
     escrow,
     ata,
     priceAtomicUsdc: priceAtomic.toString(),
@@ -567,12 +570,10 @@ function gatewayPdaUnknownMessage(statusError: string | undefined): string {
   ].join("");
 }
 
-function assertFeedIdMatch(expected: string, provided: string | undefined): void {
+function assertSourceIdMatch(expected: string, provided: string | undefined): void {
   if (provided === undefined) return;
-  if (normalizeFeedId(provided) !== normalizeFeedId(expected)) {
-    throw new Error(
-      `feedId does not match apiConfig + signaturesRequired for this signer: expected ${expected}, got ${provided}`
-    );
+  if (normalizeSourceId(provided) !== normalizeSourceId(expected)) {
+    throw new Error(`sourceId does not match apiConfig: expected ${expected}, got ${provided}`);
   }
 }
 
@@ -591,23 +592,21 @@ function u64le(value: number | bigint): Uint8Array {
 export interface AgentRequestAuthParams {
   agent: Address;
   gateway: Address;
-  feedId: Uint8Array;
+  sourceId: Uint8Array;
   canonicalTimestamp: number;
   amount: bigint;
 }
 
 /**
- * `sha256("MOLPHA_AGENT_REQAUTH_V1" || agent(32) || gateway(32) || feedId(32) || canonicalTimestamp_le(8) || amount_le(8))`.
- * Must stay byte-identical with the gateway's `agentauth.AgentRequestAuth.Hash()`
- * (tmp/gateway/internal/gateway/features/agentexec/agentauth/agentauth.go) and
- * the Solana program's `state/receipt.rs::hash_agent_request_auth`.
+ * `sha256("MOLPHA_AGENT_REQAUTH_V1" || agent(32) || gateway(32) || sourceId(32) || canonicalTimestamp_le(8) || amount_le(8))`
+ * — the escrow protocol's per-round authorization (see the module note).
  */
 export function agentRequestAuthMessage(params: AgentRequestAuthParams): Uint8Array {
   const addressEncoder = getAddressEncoder();
   const borsh = Buffer.concat([
     Buffer.from(addressEncoder.encode(params.agent)),
     Buffer.from(addressEncoder.encode(params.gateway)),
-    Buffer.from(params.feedId),
+    Buffer.from(params.sourceId),
     Buffer.from(u64le(params.canonicalTimestamp)),
     Buffer.from(u64le(params.amount))
   ]);
@@ -818,7 +817,7 @@ async function readErrorMessage(res: Response): Promise<string> {
 function mapAgentResponse(body: Record<string, unknown>): Record<string, unknown> {
   const data = (body.data ?? {}) as Record<string, unknown>;
   return {
-    feedId: data.feedId,
+    sourceId: data.sourceId,
     value: data.value,
     valuePacked: data.valuePacked,
     timestamp: data.timestamp,

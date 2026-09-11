@@ -1,13 +1,11 @@
 /**
- * The gateway's REST surface (e.g. subscription round execute) expects a
- * bare hex feedId with no `0x` prefix, but feedIds are handed back to callers
- * (feed derivation output, on-chain reads) with the prefix attached. Passing a
- * prefixed feedId straight through causes the gateway to 400 on that lookup.
- *
- * Normalize once at the tool boundary so callers can pass either form.
+ * sourceIds cross the tool boundary in both forms — the SDK and gateway use
+ * bare hex, this server's artifacts carry a `0x` prefix — so compare them
+ * through this rather than as raw strings.
  */
-export function normalizeFeedId(feedId: string): string {
-  return feedId.startsWith("0x") || feedId.startsWith("0X") ? feedId.slice(2) : feedId;
+export function normalizeSourceId(sourceId: string): string {
+  const bare = sourceId.startsWith("0x") || sourceId.startsWith("0X") ? sourceId.slice(2) : sourceId;
+  return bare.toLowerCase();
 }
 
 /**

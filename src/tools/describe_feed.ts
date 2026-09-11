@@ -1,61 +1,59 @@
 import { z } from "zod";
-import { deriveFeedId } from "../apiconfig.js";
+import { resolveSourceId } from "../apiconfig.js";
 import { getMolphaContext, requireMethod } from "../clients.js";
 import { settle } from "../errors.js";
 import { describeValueEncoding, presentFeed } from "../feed.js";
-import { normalizeFeedId } from "../hex.js";
 import { toolHandler } from "../mcp.js";
-import { apiConfigSchema } from "./schemas.js";
+import { readSubscriptionStatus } from "../subscription.js";
+import { apiConfigSchema, signaturesRequiredSchema, sourceIdSchema, submitterSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
 export function registerDescribeFeedTool(server: ToolServer): void {
   server.registerTool(
-    "molpha_describe_feed",
+    "describe_feed",
     {
       title: "Describe Molpha feed",
       description:
-        "Read a feed's on-chain state (last committed value, registryVersion, signaturesRequired) and the caller's subscription status. Pass feedId directly, or apiConfig + signaturesRequired to derive it first (see molpha_derive_feed). A missing feed account is normal pre-first-settle — feeds are created lazily. `feed.valueKind` is the attested encoding of the stored bytes (\"value\" = raw payload, \"hash\" = keccak digest), NOT a scale hint: Molpha attests no decimals on-chain. When apiConfig is supplied, `valueEncoding` reports the off-chain valueTransform that produced the number, explicitly flagged as unattested.",
+        "Read the Solana feed account for (sourceId, signaturesRequired, submitter) — last committed value, canonicalTimestamp, registryVersion, signersBitmap — and this signer's subscription status. Pass sourceId, or apiConfig to derive it (see derive_source_id). Feeds are keyed per submitter: submitter defaults to this server's signer, so pass another wallet's address to read the feed it maintains. A null feed is normal before that submitter's first submit_attestation. `feed.valueKind` is the attested encoding of the stored bytes (\"value\" = raw payload, \"hash\" = keccak digest), NOT a scale hint: Molpha attests no decimals on-chain. When apiConfig is supplied, `valueEncoding` reports the off-chain valueTransform that produced the number, explicitly flagged as unattested.",
       inputSchema: {
-        feedId: z.string().min(1).optional(),
+        sourceId: sourceIdSchema.optional(),
         apiConfig: apiConfigSchema.optional(),
-        signaturesRequired: z.number().int().positive().max(255).optional()
+        signaturesRequired: signaturesRequiredSchema,
+        submitter: submitterSchema
       }
     },
     toolHandler(async (
       {
-        feedId,
+        sourceId,
         apiConfig,
-        signaturesRequired
+        signaturesRequired,
+        submitter
       }: {
-        feedId?: string;
+        sourceId?: string;
         apiConfig?: z.infer<typeof apiConfigSchema>;
-        signaturesRequired?: number;
+        signaturesRequired: number;
+        submitter?: string;
       }
     ) => {
       const { config, solana, signer } = await getMolphaContext();
-
-      let resolvedFeedId = feedId;
-      if (!resolvedFeedId) {
-        if (!apiConfig || signaturesRequired === undefined) {
-          throw new Error("either feedId, or apiConfig + signaturesRequired, is required");
-        }
-
-        resolvedFeedId = deriveFeedId(apiConfig, signaturesRequired, signer.publicKey).feedId;
-      }
+      const resolvedSourceId = resolveSourceId(sourceId, apiConfig);
+      const feedSubmitter = submitter ?? String(signer.publicKey);
 
       const [onChainFeed, subscription] = await Promise.all([
         settle("solana.readFeed", async () =>
-          requireMethod<[string], Promise<Record<string, unknown> | null>>(solana, "readFeed")(
-            normalizeFeedId(resolvedFeedId!)
+          requireMethod<[string, number, string], Promise<Record<string, unknown> | null>>(solana, "readFeed")(
+            resolvedSourceId,
+            signaturesRequired,
+            feedSubmitter
           )
         ),
-        settle("solana.readSubscription", async () =>
-          requireMethod<[], Promise<Record<string, unknown> | null>>(solana, "readSubscription")()
-        )
+        readSubscriptionStatus(solana)
       ]);
 
       return {
-        feedId: resolvedFeedId,
+        sourceId: resolvedSourceId,
+        signaturesRequired,
+        submitter: feedSubmitter,
         feed: onChainFeed.ok ? presentFeed(onChainFeed.value) : onChainFeed,
         ...(apiConfig ? { valueEncoding: describeValueEncoding(apiConfig.valueTransform) } : {}),
         subscription,

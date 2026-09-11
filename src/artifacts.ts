@@ -3,7 +3,7 @@
 import { toCanonicalHex } from "./hex.js";
 
 export interface SignedDataUpdate {
-  feedId: string;
+  sourceId: string;
   registryVersion: number;
   signaturesRequired: number;
   value: string;
@@ -26,7 +26,7 @@ export interface DataUpdateArtifact {
 
 /** Fixed byte widths the SDK and the Solana program enforce on the flat result. */
 const HEX_WIDTHS: Record<string, number> = {
-  feedId: 32,
+  sourceId: 32,
   valuePacked: 32,
   s: 32,
   commitmentAddr: 20,
@@ -52,9 +52,10 @@ export function normalizeSignedResult(raw: Record<string, unknown>): Record<stri
 
 /**
  * Accept either shape a caller can plausibly hold: the artifact this server
- * emits from `molpha_fetch_verified` (`{ dataUpdate, signature }`) or the flat
- * SDK/gateway shape (`{ s, commitmentAddr, timestamp }`). Returns the flat shape
- * with hex fields canonicalized, so no tool needs a hand-written remap.
+ * emits from `execute_subscription_round` / `execute_agent_round`
+ * (`{ dataUpdate, signature }`) or the flat SDK/gateway shape
+ * (`{ s, commitmentAddr, timestamp }`). Returns the flat shape with hex fields
+ * canonicalized, so no tool needs a hand-written remap.
  */
 export function toSignedResult(input: Record<string, unknown>): Record<string, unknown> {
   const dataUpdate = asRecord(input.dataUpdate);
@@ -68,7 +69,7 @@ export function toSignedResult(input: Record<string, unknown>): Record<string, u
   const sig = signature ?? {};
 
   return normalizeSignedResult({
-    feedId: du.feedId ?? input.feedId,
+    sourceId: du.sourceId ?? input.sourceId,
     value: du.value ?? input.value,
     valuePacked: du.valuePacked ?? input.valuePacked,
     timestamp: du.canonicalTimestamp ?? du.timestamp ?? input.timestamp,
@@ -83,14 +84,14 @@ export function toSignedResult(input: Record<string, unknown>): Record<string, u
 
 export function toDataUpdateArtifact(result: Record<string, unknown>): DataUpdateArtifact {
   // Normalize on the way out so the artifact this server emits is byte-for-byte
-  // acceptable to molpha_execute / molpha_verify without caller-side padding.
+  // acceptable to submit_attestation / verify_attestation without caller-side padding.
   const normalized = normalizeSignedResult(result);
 
   return {
     value: String(normalized.value ?? ""),
     fresh: Boolean(normalized.fresh ?? true),
     dataUpdate: {
-      feedId: String(normalized.feedId ?? ""),
+      sourceId: String(normalized.sourceId ?? ""),
       registryVersion: Number(normalized.registryVersion ?? 0),
       signaturesRequired: Number(normalized.signaturesRequired ?? 0),
       value: String(normalized.value ?? ""),

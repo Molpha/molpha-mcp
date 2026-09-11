@@ -102,6 +102,11 @@
           "isRequired": false
         },
         {
+          "name": "GATEWAY_AUTHORITIES",
+          "description": "Comma-separated base58 gateway authorities, one per GATEWAY_ENDPOINTS entry in the same order. Bound into request signatures; required for gateways that do not serve GET /v1/info.",
+          "isRequired": false
+        },
+        {
           "name": "MOLPHA_EVM_NETWORKS",
           "description": "Comma-separated EVM verifier networks.",
           "isRequired": false,

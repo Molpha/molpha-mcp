@@ -59,7 +59,7 @@
     "@anchor-lang/core": "^1.1.2",
     "@coral-xyz/anchor": "^0.30.1",
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@molpha/sdk": "0.1.0",
+    "@molpha/sdk": "file:../sdk",
     "@privy-io/node": "^0.26.0",
     "@solana-program/token": "^0.15.0",
     "@solana/kit": "^7.0.0",

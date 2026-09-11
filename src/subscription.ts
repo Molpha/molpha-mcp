@@ -4,8 +4,6 @@ export interface SubscriptionStatus {
   active: boolean;
   owner?: string;
   planType?: unknown;
-  prepaidUsdc?: string;
-  price?: string;
   validUntil?: string;
   usedRounds?: number;
   maxRounds?: number;
@@ -24,7 +22,7 @@ export async function readSubscriptionStatus(
       return {
         active: false,
         message:
-          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR, or use payment: \"x402\" for a self-funded pay-per-request round."
+          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR, or use execute_agent_round for a self-funded pay-per-request round."
       };
     }
 
@@ -38,8 +36,6 @@ export async function readSubscriptionStatus(
       active,
       owner: subscription.owner?.toString?.() ?? String(subscription.owner ?? ""),
       planType: subscription.planType,
-      prepaidUsdc: String(subscription.prepaidUsdc ?? ""),
-      price: String(subscription.price ?? ""),
       validUntil: validUntil.toString(),
       usedRounds: Number(usedRounds),
       maxRounds: Number(maxRounds),
@@ -49,7 +45,7 @@ export async function readSubscriptionStatus(
             message:
               validUntil <= now
                 ? "Subscription expired. Extend via the bootstrap CLI before requesting data."
-                : "Subscription round quota exhausted for this period. Extend via the bootstrap CLI, or use payment: \"x402\"."
+                : "Subscription round quota exhausted for this period. Extend via the bootstrap CLI, or use execute_agent_round."
           })
     };
   } catch (error) {
@@ -58,14 +54,4 @@ export async function readSubscriptionStatus(
       message: error instanceof Error ? error.message : String(error)
     };
   }
-}
-
-export async function assertActiveSubscription(solana: Record<string, unknown>): Promise<SubscriptionStatus> {
-  const status = await readSubscriptionStatus(solana);
-
-  if (!status.active) {
-    throw new Error(status.message ?? "Subscription is inactive or missing");
-  }
-
-  return status;
 }

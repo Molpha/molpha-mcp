@@ -30,7 +30,8 @@ export function normalizeError(error: unknown): NormalizedToolError {
   if (status === 401) {
     return {
       ...withStatus("unauthorized", message, status),
-      remediation: "Ensure OWNER_KEYPAIR matches the job owner or an authorized request signer."
+      remediation:
+        "The request signature binds the program, gateway PDA, sourceId, and quorum. Ensure OWNER_KEYPAIR is the subscription owner and GATEWAY_AUTHORITIES names each gateway's authority."
     };
   }
 
@@ -39,8 +40,16 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return {
       ...withStatus("payment_required", message, status),
       remediation:
-        "Fund the x402 escrow (see molpha_agent_status) and retry, or use payment: \"subscription\" with an active subscription.",
+        "Fund the x402 escrow (see get_agent_status) and retry, or use execute_subscription_round with an active subscription.",
       ...(payload !== undefined ? { details: payload } : {})
+    };
+  }
+
+  if (status === 403) {
+    return {
+      ...withStatus("forbidden", message, status),
+      remediation:
+        "The gateway refused this signer's subscription (missing, expired, or out of quota). Extend it via the bootstrap CLI, or use execute_agent_round for a self-funded round."
     };
   }
 
@@ -64,7 +73,20 @@ export function normalizeError(error: unknown): NormalizedToolError {
       code: "invalid_config",
       message,
       remediation:
-        "Check PRIVY_WALLET_ADDRESS / TURNKEY_WALLET_ADDRESS (and optional MOLPHA_X402_GATEWAY_PDA) in your MCP env. Use a real Solana devnet pubkey — not placeholders like <base58-solana-address>."
+        "Check PRIVY_WALLET_ADDRESS / TURNKEY_WALLET_ADDRESS, GATEWAY_AUTHORITIES, and MOLPHA_X402_GATEWAY_PDA in your MCP env. Use real Solana devnet pubkeys — not placeholders like <base58-solana-address>."
+    };
+  }
+
+  if (message.includes("GATEWAY_AUTHORITIES")) {
+    return { code: "invalid_config", message };
+  }
+
+  if (message.includes("/v1/info")) {
+    return {
+      code: "invalid_config",
+      message,
+      remediation:
+        "This gateway does not publish its identity at GET /v1/info. Set GATEWAY_AUTHORITIES to each gateway's base58 authority, in GATEWAY_ENDPOINTS order."
     };
   }
 
@@ -72,7 +94,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return {
       code: "subscription_inactive",
       message,
-      remediation: "Run the bootstrap CLI to subscribe, or use payment: \"x402\" for a self-funded round."
+      remediation: "Run the bootstrap CLI to subscribe, or use execute_agent_round for a self-funded round."
     };
   }
 
