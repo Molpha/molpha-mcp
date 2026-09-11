@@ -52,10 +52,14 @@ export function checkX402PerRoundCap(priceAtomic: bigint, maxPriceUsdcAtomic: bi
   }
 }
 
+/** x402 USDC signed away today, in base units. */
+export function x402SpentToday(): bigint {
+  return x402Spend.day === todayKey() ? x402Spend.spentAtomic : 0n;
+}
+
 /** Checks a proposed wallet outflow against the daily spend cap only. */
 export function checkX402DailySpendCap(amountAtomic: bigint, maxSpendPerDayUsdcAtomic: bigint): void {
-  const day = todayKey();
-  const spentToday = x402Spend.day === day ? x402Spend.spentAtomic : 0n;
+  const spentToday = x402SpentToday();
   if (spentToday + amountAtomic > maxSpendPerDayUsdcAtomic) {
     throw new Error(
       `x402 daily spend cap reached (${formatUsdcAtomic(maxSpendPerDayUsdcAtomic)} USDC per day, ${formatUsdcAtomic(spentToday)} USDC already spent). Adjust MOLPHA_X402_MAX_SPEND_PER_DAY_USDC or wait until tomorrow.`
@@ -66,7 +70,7 @@ export function checkX402DailySpendCap(amountAtomic: bigint, maxSpendPerDayUsdcA
 /**
  * Checks a proposed x402 round's price against the per-round and daily
  * spend caps, without recording the spend (call {@link recordX402Spend}
- * once the round actually settles/funds).
+ * once a payment is signed).
  */
 export function checkX402SpendCap(
   priceAtomic: bigint,
@@ -77,7 +81,11 @@ export function checkX402SpendCap(
   checkX402DailySpendCap(priceAtomic, maxSpendPerDayUsdcAtomic);
 }
 
-/** Records an actual x402 spend against the daily cap after funding succeeds. */
+/**
+ * Records an x402 payment against the daily cap as soon as it is signed and
+ * handed to a gateway. A signed transfer can settle whether or not the round
+ * completes, so counting it only on success would let the cap be exceeded.
+ */
 export function recordX402Spend(priceAtomic: bigint): void {
   const day = todayKey();
   if (x402Spend.day !== day) {

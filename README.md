@@ -9,7 +9,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that l
 Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet. This server exposes that workflow as a small set of MCP tools and keeps signing behind a local, Privy, or Turnkey-backed wallet.
 
 > [!WARNING]
-> This release targets Solana Devnet and Sepolia verifier networks. Treat it as testnet software, not a production security boundary. Write tools spend SOL and may consume subscription quota unless dry-run mode is enabled.
+> This release targets Solana Devnet and Sepolia verifier networks. Treat it as testnet software, not a production security boundary. Write tools spend SOL, and round tools may consume subscription quota or pay USDC for x402 rounds, unless dry-run mode is enabled.
 
 ## What you can do
 
@@ -28,7 +28,7 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 | `derive_source_id` | Read | Derive the `sourceId` for an `apiConfig` locally (see [How sourceId is derived](#how-sourceid-is-derived)). No transaction, no wallet. |
 | `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass `sourceId`, or `apiConfig` to derive it. |
 | `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account. |
-| `get_agent_status` | Read | Read the x402 agent escrow (USDC balance, committed amount, quoted next price) for the current signer. |
+| `get_agent_status` | Read | Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget. |
 | `execute_subscription_round` | Read/quota | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
 | `execute_agent_round` | Read/spend | Run a signing round paid per request over x402; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
 | `verify_attestation` | Read | Build EVM/Starknet verifier address and call arguments (calldata only, by design). |
@@ -84,9 +84,9 @@ GATEWAY_ENDPOINTS=
 GATEWAY_AUTHORITIES=
 ```
 
-The same wallet owns feeds and any x402 escrow, authenticates gateway requests, and signs Solana transactions. Do not commit `.env`, wallet files, or credentials.
+The same wallet owns feeds, pays for x402 rounds from its USDC account, authenticates gateway requests, and signs Solana transactions. Do not commit `.env`, wallet files, or credentials.
 
-Gateway request signatures bind the gateway's on-chain PDA, so the server needs each gateway's authority. Set `GATEWAY_AUTHORITIES` to the base58 authority of each `GATEWAY_ENDPOINTS` entry, in the same order. An empty entry makes the SDK discover the authority from the gateway's `GET /v1/info`, which not every gateway serves.
+Gateway request signatures bind the gateway's on-chain PDA, so the server needs each gateway's authority. Set `GATEWAY_AUTHORITIES` to the base58 authority of each `GATEWAY_ENDPOINTS` entry, in the same order. An empty entry makes the SDK discover the authority from the gateway's `GET /v1/info`, which not every gateway serves. The authority is also the only address x402 payments go to (see [x402 pay-per-request](#x402-pay-per-request)).
 
 Other supported signer configurations:
 
@@ -200,7 +200,7 @@ Replace the example URL with a public endpoint that returns stable, independentl
 
 ### Check x402 spend before paying
 
-> Call `get_agent_status` for 3 required signatures. Tell me the escrow's USDC balance, committed amount, and quoted next price before I authorize an `execute_agent_round`.
+> Call `get_agent_status` for 3 required signatures. Tell me the quoted next price, whether the gateway's float covers it, and my USDC balance before I authorize an `execute_agent_round`.
 
 ### Publish with an approval checkpoint
 
@@ -216,12 +216,13 @@ flowchart LR
     Signer --> Memory["Local keypair"]
     Signer --> Keychain["Privy or Turnkey"]
     Server --> SDK["Molpha SDK"]
-    Server --> X402["x402 client<br/>escrow funding · AgentRequestAuth"]
+    Server --> X402["x402 client<br/>payment checks · USDC transfer"]
     SDK --> Gateway["Molpha gateway<br/>subscription round"]
     X402 --> Gateway2["Molpha gateway<br/>x402 agent round"]
+    Gateway2 --> Facilitator["x402 facilitator<br/>verify · settle"]
     Gateway <--> Nodes["Oracle node quorum"]
     Gateway2 <--> Nodes
-    SDK <--> Solana["Solana program<br/>feeds · subscriptions · agent escrows"]
+    SDK <--> Solana["Solana program<br/>feeds · subscriptions · x402 settlement"]
     X402 <--> Solana
     Gateway --> Artifact["Threshold-signed<br/>attestation"]
     Gateway2 --> Artifact
@@ -253,9 +254,8 @@ Provisioning is a separate CLI path because subscribing or extending debits USDC
 | `MOLPHA_STARKNET_NETWORKS` | `starknet-sepolia` | Comma-separated Starknet verifier networks |
 | `MOLPHA_MAX_EXECUTES_PER_DAY` | `100` | Process-local daily Solana-submit cap |
 | `MOLPHA_DRY_RUN` | `false` | Preview all writes when set to `true` |
-| `MOLPHA_X402_MAX_PRICE_USDC` | `1` | Refuse to fund an x402 round priced above this (decimal USDC) |
-| `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` | `10` | Process-local daily x402 spend cap (decimal USDC) |
-| `MOLPHA_X402_GATEWAY_PDA` | — | Optional: skip the x402 discovery round-trip when the gateway's PDA is known out of band |
+| `MOLPHA_X402_MAX_PRICE_USDC` | `1` | Refuse to pay for an x402 round priced above this (decimal USDC) |
+| `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` | `10` | Process-local daily cap on USDC signed for x402 rounds (decimal USDC) |
 
 The daily counters are process-local and reset when the server restarts. They are safety rails, not durable rate limits.
 
@@ -264,12 +264,23 @@ The daily counters are process-local and reset when the server restarts. They ar
 Each way of paying for a round has its own tool:
 
 - `execute_subscription_round` — use the signer's active USDC subscription (see [Bootstrap a subscription](#4-bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
-- `execute_agent_round` — self-fund the round from a per-signer escrow account, with no subscription required. If the escrow is underfunded, the MCP server funds it from the signer's own USDC balance (creating the escrow's associated token account if needed) up to `MOLPHA_X402_MAX_PRICE_USDC` per round and `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` per day, then refuses with a clear error above those caps.
+- `execute_agent_round` — pay for the round itself with an [x402](https://github.com/x402-foundation/x402) `exact` payment on Solana, with no subscription required. The signer transfers the round price in USDC to the gateway authority; the gateway's facilitator pays the network fee.
 
-Call `get_agent_status` to inspect the escrow (USDC balance, amount already committed to unsettled rounds, and the quoted price for a given quorum) before spending, or to confirm a round settled. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
+A paid round works like this:
 
-> [!NOTE]
-> `execute_agent_round` speaks the escrow-based agent protocol (escrow funding plus a signed `AgentRequestAuth`). Gateways that have moved to x402 v2 — payment in a facilitator-verified `PAYMENT-SIGNATURE` header — reject it. Use `execute_subscription_round` against those gateways until the client is ported.
+1. The server requests the round without payment. The gateway answers `402 Payment Required` with its payment requirements.
+2. The server treats those requirements as untrusted and signs nothing unless every one matches what it derives itself:
+   - `payTo` is the gateway authority: the `GATEWAY_AUTHORITIES` entry for that endpoint, or the authority from `GET /v1/info`, which must also own an Active on-chain `Gateway` account.
+   - `asset` is the USDC mint in the on-chain `ProtocolConfig`.
+   - `amount` is the protocol price, `x402_round_base + (signaturesRequired + redundancy_buffer) × reward_per_signature`, within `MOLPHA_X402_MAX_PRICE_USDC` and the rest of today's `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC`.
+   - `network` is the cluster `SOLANA_RPC` points at.
+   - `extra.memo` is this round's commitment to the program, gateway, source, quorum, registry version, and timestamp.
+   - `extra.feePayer` is an account other than the signer.
+3. The server signs a USDC `TransferChecked` from the signer's token account and repeats the request with the payment in the `PAYMENT-SIGNATURE` header. The gateway verifies the payment before it dispatches the round and settles it before it returns data. The tool result includes a `paymentReceipt` with the settlement transaction.
+
+The daily cap counts every payment the server signs, whether or not its round completes, because a signed transfer can settle until its blockhash expires. When the gateway rejects a payment, the tool fails without paying again. When the gateway's answer leaves the outcome unknown (a 5xx, or a dropped connection after the payment was sent), the tool fails with `payment_outcome_unknown` and the payment's memo; look for that memo in the signer's USDC account before paying for the round again.
+
+Call `get_agent_status` before spending. It returns the quoted price for a quorum, the gateway's USDC float (its working capital for protocol settlement, not a per-payer balance; the gateway refuses rounds its float cannot cover), the signer's USDC balance, and the remaining daily budget. With `dryRun: true`, `execute_agent_round` quotes and verifies the payment and reports the signer's balance without signing anything. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
 
 ## Development
 
