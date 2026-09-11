@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/molpha/mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/molpha/mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](package.json)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24-339933?logo=node.js&logoColor=white)](package.json)
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI agents create, fetch, verify, and publish [Molpha](https://docs.molpha.io/) oracle data.
 
@@ -57,7 +57,7 @@ The SDK, gateway, and nodes all derive it this way. It is **not** RFC 8785 (JCS)
 
 ### Requirements
 
-- Node.js 20 or later
+- Node.js 24 or later
 - A Solana wallet funded with Devnet SOL
 - Devnet USDC if you plan to use an active subscription or the x402 pay-per-request path
 - An MCP client such as Cursor, Claude Desktop, or Codex
@@ -95,6 +95,13 @@ Other supported signer configurations:
 | Local keypair | `SIGNER_BACKEND=memory`, `OWNER_KEYPAIR` |
 | Privy | `SIGNER_BACKEND=keychain`, `KEYCHAIN_BACKEND=privy`, `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `PRIVY_WALLET_ID`, `PRIVY_WALLET_ADDRESS` |
 | Turnkey | `SIGNER_BACKEND=keychain`, `KEYCHAIN_BACKEND=turnkey`, `TURNKEY_API_PUBLIC_KEY`, `TURNKEY_API_PRIVATE_KEY`, `TURNKEY_ORGANIZATION_ID`, `TURNKEY_WALLET_ADDRESS` |
+
+Keychain backends are optional peer dependencies. Install the provider you use:
+
+```bash
+npm install @privy-io/node          # KEYCHAIN_BACKEND=privy
+npm install @turnkey/sdk-server @turnkey/solana   # KEYCHAIN_BACKEND=turnkey
+```
 
 See [.env.example](.env.example) and the ready-to-edit files in [examples](examples) for every backend.
 
