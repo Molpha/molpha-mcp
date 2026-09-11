@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { address, getAddressEncoder } from "@solana/kit";
+import { address } from "@solana/kit";
 import { Keypair, Transaction, type VersionedTransaction } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMolphaProgramId } from "../../src/clients.js";
@@ -22,21 +22,8 @@ const defaultApiConfig = {
   responseParser: "$.rate"
 };
 
-function deriveTestFeedId(
-  payer: string,
-  apiConfig: { url: string; responseParser: string } = defaultApiConfig,
-  signaturesRequired = 1
-): string {
-  const canonicalize = requireSdkExport<(cfg: Record<string, unknown>) => Record<string, unknown>>(
-    "canonicalizeAPIConfig"
-  );
-  const deriveHash = requireSdkExport<(cfg: Record<string, unknown>) => Uint8Array>("deriveApiConfigHash");
-  const deriveId = requireSdkExport<(owner: Uint8Array, hash: Uint8Array, sigs: number) => string>(
-    "deriveFeedIdString"
-  );
-  const canonical = canonicalize(apiConfig);
-  const hash = deriveHash(canonical);
-  return deriveId(Buffer.from(getAddressEncoder().encode(address(payer))), hash, signaturesRequired);
+function deriveTestSourceId(apiConfig: { url: string; responseParser: string } = defaultApiConfig): string {
+  return requireSdkExport<(cfg: Record<string, unknown>) => string>("deriveSourceIdString")(apiConfig);
 }
 
 function makeSigner(keypair: Keypair): MolphaSigner {
@@ -72,6 +59,7 @@ function makeConfig(x402Overrides: Partial<MolphaConfig["x402"]> = {}): MolphaCo
   gatewayEndpointCounter += 1;
   return {
     gatewayEndpoints: [`http://gateway-${gatewayEndpointCounter}.test`],
+    gatewayAuthorities: [undefined],
     solanaRpc: "http://solana.test",
     ownerKeypair: undefined,
     evmNetworks: [],
@@ -116,7 +104,7 @@ function makeAccept(overrides: {
   asset?: string;
   amount?: string;
   maxAmountRequired?: string;
-  feedId?: string;
+  sourceId?: string;
 }): X402Accept {
   return {
     scheme: "exact",
@@ -130,7 +118,7 @@ function makeAccept(overrides: {
     extra: {
       agent: overrides.agent,
       gateway: overrides.gateway,
-      feedId: overrides.feedId ?? "ab".repeat(32),
+      sourceId: overrides.sourceId ?? "ab".repeat(32),
       canonicalTimestamp: 1_700_000_000,
       amount: overrides.amount ?? "1000000",
       payer: overrides.payer,
@@ -142,14 +130,14 @@ function makeAccept(overrides: {
 }
 
 describe("agentRequestAuthMessage", () => {
-  it("matches sha256(domainPrefix || agent || gateway || feedId || ts_le || amount_le)", () => {
+  it("matches sha256(domainPrefix || agent || gateway || sourceId || ts_le || amount_le)", () => {
     const agent = Keypair.generate().publicKey;
     const gateway = Keypair.generate().publicKey;
-    const feedId = new Uint8Array(32).fill(0xab);
+    const sourceId = new Uint8Array(32).fill(0xab);
     const params: AgentRequestAuthParams = {
       agent: address(agent.toBase58()),
       gateway: address(gateway.toBase58()),
-      feedId,
+      sourceId,
       canonicalTimestamp: 1_700_000_000,
       amount: 1_234_567n
     };
@@ -165,7 +153,7 @@ describe("agentRequestAuthMessage", () => {
           Buffer.from("MOLPHA_AGENT_REQAUTH_V1", "utf8"),
           agent.toBuffer(),
           gateway.toBuffer(),
-          Buffer.from(feedId),
+          Buffer.from(sourceId),
           tsBuf,
           amountBuf
         ])
@@ -234,7 +222,7 @@ describe("verifyX402FundingAccept", () => {
 describe("agentFetch", () => {
   const payerKeypair = Keypair.generate();
   const signer = makeSigner(payerKeypair);
-  const derivedFeedId = deriveTestFeedId(String(signer.publicKey));
+  const derivedSourceId = deriveTestSourceId();
   const solana = {
     getRegistryVersion: async () => 1,
     fetchProtocolTokens: async () => ({ usdcMint, treasury: Keypair.generate().publicKey.toBase58() })
@@ -292,7 +280,7 @@ describe("agentFetch", () => {
   it("funds the escrow on 402, signs AgentRequestAuth, and returns the mapped result", async () => {
     const gatewayPubkey = Keypair.generate().publicKey.toBase58();
     const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
-    const feedIdHex = derivedFeedId;
+    const sourceIdHex = derivedSourceId;
     const config = makeConfig();
 
     let executeCalls = 0;
@@ -329,7 +317,7 @@ describe("agentFetch", () => {
               gateway: gatewayPubkey,
               agent: escrow,
               payTo: escrowAta,
-              feedId: feedIdHex
+              sourceId: sourceIdHex
             })
           ]
         });
@@ -341,7 +329,7 @@ describe("agentFetch", () => {
       return jsonResponse(200, {
         status: "completed",
         data: {
-          feedId: feedIdHex,
+          sourceId: sourceIdHex,
           value: "42",
           valuePacked: "0".repeat(64),
           timestamp: 1_700_000_000,
@@ -365,7 +353,7 @@ describe("agentFetch", () => {
     );
 
     expect(result.value).toBe("42");
-    expect(result.feedId).toBe(feedIdHex);
+    expect(result.sourceId).toBe(sourceIdHex);
     expect(executeCalls).toBe(2);
     expect(fakeConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
   });
@@ -395,7 +383,7 @@ describe("agentFetch", () => {
       return jsonResponse(200, {
         status: "completed",
         data: {
-          feedId: "cd".repeat(32),
+          sourceId: "cd".repeat(32),
           value: "77",
           valuePacked: "0".repeat(64),
           timestamp: body.canonical_timestamp,
@@ -510,7 +498,7 @@ describe("agentFetch", () => {
       return jsonResponse(200, {
         status: "completed",
         data: {
-          feedId: "cd".repeat(32),
+          sourceId: "cd".repeat(32),
           value: "99",
           valuePacked: "0".repeat(64),
           timestamp: body.canonical_timestamp,
@@ -571,7 +559,7 @@ describe("agentFetch", () => {
       return jsonResponse(200, {
         status: "completed",
         data: {
-          feedId: "cd".repeat(32),
+          sourceId: "cd".repeat(32),
           value: "7",
           valuePacked: "0".repeat(64),
           timestamp: body.canonical_timestamp,
@@ -799,7 +787,7 @@ describe("agentFetch", () => {
   it("funds and executes when the top-up equals the daily spend cap", async () => {
     const gatewayPubkey = Keypair.generate().publicKey.toBase58();
     const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
-    const feedIdHex = derivedFeedId;
+    const sourceIdHex = derivedSourceId;
     const config = makeConfig({ maxSpendPerDayUsdcAtomic: 1_000_000n });
 
     let executeCalls = 0;
@@ -834,7 +822,7 @@ describe("agentFetch", () => {
               gateway: gatewayPubkey,
               agent: escrow,
               payTo: escrowAta,
-              feedId: feedIdHex
+              sourceId: sourceIdHex
             })
           ]
         });
@@ -845,7 +833,7 @@ describe("agentFetch", () => {
       return jsonResponse(200, {
         status: "completed",
         data: {
-          feedId: feedIdHex,
+          sourceId: sourceIdHex,
           value: "42",
           valuePacked: "0".repeat(64),
           timestamp: 1_700_000_000,
@@ -949,7 +937,7 @@ describe("agentFetch", () => {
               gateway: gatewayPubkey,
               agent: escrow,
               payTo: escrowAta,
-              feedId: derivedFeedId
+              sourceId: derivedSourceId
             })
           ]
         });
@@ -965,7 +953,7 @@ describe("agentFetch", () => {
       return jsonResponse(200, {
         status: "completed",
         data: {
-          feedId: derivedFeedId,
+          sourceId: derivedSourceId,
           value: "7",
           valuePacked: "0".repeat(64),
           timestamp: body.canonical_timestamp,
@@ -994,7 +982,7 @@ describe("agentFetch", () => {
     expect(fakeConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts a caller-provided feedId that matches the derived id (bare hex)", async () => {
+  it("accepts a caller-provided sourceId that matches the derived id (bare hex)", async () => {
     const gatewayPda = Keypair.generate().publicKey.toBase58();
     const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
     const config = makeConfig({ gatewayPda });
@@ -1019,16 +1007,16 @@ describe("agentFetch", () => {
       {
         apiConfig: defaultApiConfig,
         signaturesRequired: 1,
-        feedId: derivedFeedId,
+        sourceId: derivedSourceId,
         dryRun: true
       }
     );
 
     expect(result.dryRun).toBe(true);
-    expect(result.feedId).toBe(derivedFeedId);
+    expect(result.sourceId).toBe(derivedSourceId);
   });
 
-  it("accepts a caller-provided feedId that matches the derived id (0x prefix)", async () => {
+  it("accepts a caller-provided sourceId that matches the derived id (0x prefix)", async () => {
     const gatewayPda = Keypair.generate().publicKey.toBase58();
     const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
     const config = makeConfig({ gatewayPda });
@@ -1053,16 +1041,16 @@ describe("agentFetch", () => {
       {
         apiConfig: defaultApiConfig,
         signaturesRequired: 1,
-        feedId: `0x${derivedFeedId}`,
+        sourceId: `0x${derivedSourceId}`,
         dryRun: true
       }
     );
 
     expect(result.dryRun).toBe(true);
-    expect(result.feedId).toBe(derivedFeedId);
+    expect(result.sourceId).toBe(derivedSourceId);
   });
 
-  it("rejects a mismatched caller-provided feedId before any network call", async () => {
+  it("rejects a mismatched caller-provided sourceId before any network call", async () => {
     const config = makeConfig();
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -1073,16 +1061,16 @@ describe("agentFetch", () => {
         {
           apiConfig: defaultApiConfig,
           signaturesRequired: 1,
-          feedId: "ff".repeat(32)
+          sourceId: "ff".repeat(32)
         }
       )
-    ).rejects.toThrow(/feedId does not match/);
+    ).rejects.toThrow(/sourceId does not match/);
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
   });
 
-  it("rejects discovery when extra.feedId does not match the derived id", async () => {
+  it("rejects discovery when extra.sourceId does not match the derived id", async () => {
     const gatewayPubkey = Keypair.generate().publicKey.toBase58();
     const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
     const config = makeConfig();
@@ -1100,7 +1088,7 @@ describe("agentFetch", () => {
             gateway: gatewayPubkey,
             agent: escrow,
             payTo: escrowAta,
-            feedId: "cd".repeat(32)
+            sourceId: "cd".repeat(32)
           })
         ]
       });
@@ -1115,7 +1103,7 @@ describe("agentFetch", () => {
           signaturesRequired: 1
         }
       )
-    ).rejects.toThrow(/feedId does not match/);
+    ).rejects.toThrow(/sourceId does not match/);
 
     expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
   });

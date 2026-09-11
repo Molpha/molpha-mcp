@@ -25,4 +25,35 @@ describe("loadConfig", () => {
     expect(config.starknetNetworks).toEqual(["starknet-sepolia"]);
     expect(config.guardrails.maxExecutesPerDay).toBe(100);
   });
+
+  it("pairs GATEWAY_AUTHORITIES with GATEWAY_ENDPOINTS by position", () => {
+    const authority = "11111111111111111111111111111111";
+    const config = loadConfig({
+      GATEWAY_ENDPOINTS: "http://one.test,http://two.test",
+      GATEWAY_AUTHORITIES: `${authority},`
+    });
+
+    expect(config.gatewayAuthorities).toEqual([authority, undefined]);
+  });
+
+  it("leaves every gateway authority to /v1/info discovery when GATEWAY_AUTHORITIES is unset", () => {
+    const config = loadConfig({ GATEWAY_ENDPOINTS: "http://one.test,http://two.test" });
+
+    expect(config.gatewayAuthorities).toEqual([undefined, undefined]);
+  });
+
+  it("rejects a GATEWAY_AUTHORITIES list that does not line up with GATEWAY_ENDPOINTS", () => {
+    expect(() =>
+      loadConfig({
+        GATEWAY_ENDPOINTS: "http://one.test,http://two.test",
+        GATEWAY_AUTHORITIES: "11111111111111111111111111111111"
+      })
+    ).toThrow(/one authority per endpoint/);
+  });
+
+  it("rejects a malformed gateway authority", () => {
+    expect(() =>
+      loadConfig({ GATEWAY_ENDPOINTS: "http://one.test", GATEWAY_AUTHORITIES: "not-a-key" })
+    ).toThrow(/GATEWAY_AUTHORITIES\[0\]/);
+  });
 });

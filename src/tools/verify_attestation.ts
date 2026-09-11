@@ -7,13 +7,13 @@ import { type ToolServer } from "./types.js";
 
 const chainSchema = z.enum(["evm", "starknet"]);
 
-export function registerVerifyTool(server: ToolServer): void {
+export function registerVerifyAttestationTool(server: ToolServer): void {
   server.registerTool(
-    "molpha_verify",
+    "verify_attestation",
     {
-      title: "Verify Molpha result",
+      title: "Build Molpha verifier calldata",
       description:
-        "Build the verifier address and call args for a signed DataUpdate on EVM or Starknet. This tool stops at calldata by design, not by omission: the Molpha verifier is stateless, so the agent (or its contract) executes verify() itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. There is no EVM/Starknet execution path anywhere in this MCP server. For Solana, submit the DataUpdate via molpha_execute (or molpha_fetch_verified autoSubmit) and read it back with molpha_get_latest — there is no separate simulate-verify path. Accepts the dataUpdate/signature objects from molpha_fetch_verified verbatim; short hex fields are zero-padded to their canonical widths server-side.",
+        "Build the verifier address and call args for a signed attestation on EVM or Starknet. This tool stops at calldata by design, not by omission: the Molpha verifier is stateless, so the agent (or its contract) executes verify() itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. There is no EVM/Starknet execution path anywhere in this MCP server. For Solana, submit the attestation via submit_attestation (or a round tool's autoSubmit) and read it back with get_latest_value — there is no separate simulate-verify path. Accepts the dataUpdate/signature objects from execute_subscription_round / execute_agent_round verbatim; short hex fields are zero-padded to their canonical widths server-side.",
       inputSchema: {
         dataUpdate: z.record(z.unknown()),
         signature: z.record(z.unknown()),

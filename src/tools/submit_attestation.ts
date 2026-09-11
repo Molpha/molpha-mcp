@@ -6,7 +6,7 @@ import { type ToolServer } from "./types.js";
 
 /** The flat gateway/SDK shape. */
 const flatResultSchema = z.object({
-  feedId: z.string().min(1),
+  sourceId: z.string().min(1),
   value: z.string().optional(),
   valuePacked: z.string().optional(),
   timestamp: z.number().int(),
@@ -18,12 +18,12 @@ const flatResultSchema = z.object({
   fresh: z.boolean().optional()
 });
 
-/** The artifact shape `molpha_fetch_verified` returns, accepted verbatim. */
+/** The artifact shape the round tools return, accepted verbatim. */
 const artifactResultSchema = z.object({
   value: z.string().optional(),
   fresh: z.boolean().optional(),
   dataUpdate: z.object({
-    feedId: z.string().min(1),
+    sourceId: z.string().min(1),
     registryVersion: z.number().int(),
     signaturesRequired: z.number().int(),
     value: z.string().optional(),
@@ -38,19 +38,19 @@ const artifactResultSchema = z.object({
 });
 
 // Extra keys (`payment`, `trustAnchor`, `verifierArgs`) ride along on a pasted
-// fetch_verified response; passthrough keeps that from being a validation error.
+// round response; passthrough keeps that from being a validation error.
 const signedResultSchema = z.union([
   artifactResultSchema.passthrough(),
   flatResultSchema.passthrough()
 ]);
 
-export function registerExecuteTool(server: ToolServer): void {
+export function registerSubmitAttestationTool(server: ToolServer): void {
   server.registerTool(
-    "molpha_execute",
+    "submit_attestation",
     {
-      title: "Execute Molpha data update on Solana",
+      title: "Submit Molpha attestation to Solana",
       description:
-        "Submit a signed DataUpdate to the Solana feed via submit_data_update. Pass the output of molpha_fetch_verified through unmodified — both the artifact shape ({ dataUpdate, signature }) and the flat shape ({ s, commitmentAddr, timestamp }) are accepted, and short hex fields are zero-padded server-side. Permissionless on-chain; the owner key pays SOL fees. EVM/Starknet execution is deliberately out of scope (see molpha_verify) — use the verifier args from molpha_fetch_verified and call verify() yourself.",
+        "Submit a signed attestation to Solana via the program's submit_attestation, writing the feed account for (sourceId, signaturesRequired, this signer) — created on the first submit. Pass the output of execute_subscription_round or execute_agent_round through unmodified — both the artifact shape ({ dataUpdate, signature }) and the flat shape ({ sourceId, s, commitmentAddr, timestamp }) are accepted, and short hex fields are zero-padded server-side. Permissionless on-chain; the owner key pays SOL fees and becomes the feed's submitter. EVM/Starknet execution is deliberately out of scope (see verify_attestation) — use the verifier args from the round tools and call verify() yourself.",
       inputSchema: {
         result: signedResultSchema,
         dryRun: z.boolean().optional()
@@ -70,7 +70,7 @@ export function registerExecuteTool(server: ToolServer): void {
       const prepared = prepareSignedResult(result);
 
       if (isDryRun) {
-        return previewSubmit("molpha_execute", prepared, String(signer.publicKey));
+        return previewSubmit("submit_attestation", prepared, String(signer.publicKey));
       }
 
       return submitSignedResult(prepared);

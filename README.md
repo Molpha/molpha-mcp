@@ -14,9 +14,9 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 ## What you can do
 
 - Discover the active registry, oracle nodes, gateways, and verifier deployments.
-- Derive a feedId locally from a declarative API spec — no transaction, no subscription required. Feeds are created lazily on first settle.
-- Request a threshold-signed result and build verifier arguments for multiple chains, paid for either by an active USDC subscription or a self-funded [x402](#x402-pay-per-request) round.
-- Build EVM/Starknet verifier call args, or submit a verified update to a Solana feed.
+- Derive a source's `sourceId` locally from a declarative API spec — no transaction, wallet, or subscription required.
+- Run a threshold-signing round and build verifier arguments for multiple chains, paid for either by an active USDC subscription or a self-funded [x402](#x402-pay-per-request) round.
+- Build EVM/Starknet verifier call args, or submit a signed attestation to a Solana feed.
 - Use a local keypair, Privy server wallet, or Turnkey wallet without changing the MCP tool surface.
 - Put daily caps and a global dry-run default around agent-initiated writes and x402 spend.
 
@@ -24,18 +24,34 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 
 | Tool | Access | Description |
 | --- | --- | --- |
-| `molpha_get_capabilities` | Read | Return the registry version, node set, gateways, chains, verifier metadata, and x402 caps. |
-| `molpha_describe_feed` | Read | Read a feed's on-chain state and subscription status. Pass `feedId`, or `apiConfig` + `signaturesRequired` to derive it. |
-| `molpha_derive_feed` | Read | Locally derive a feedId from `apiConfig` + `signaturesRequired`. No transaction. |
-| `molpha_agent_status` | Read | Read the x402 agent escrow (USDC balance, committed amount, quoted next price) for the current signer. |
-| `molpha_fetch_verified` | Read/quota/spend | Run a signing round and return the signed artifact plus verifier arguments. `payment: "subscription" \| "x402" \| "auto"` selects how the round is paid for; `autoSubmit: true` settles the Solana leg in the same call. |
-| `molpha_get_latest` | Read | Read the latest value stored in a Solana feed account. |
-| `molpha_verify` | Read | Build EVM/Starknet verifier address and call arguments (calldata only, by design). |
-| `molpha_execute` | Write | Submit a signed data update to Solana. Accepts the `molpha_fetch_verified` output unmodified. |
+| `get_capabilities` | Read | Return the program id, registry version, node set, gateways, chains, verifier metadata, and x402 caps. |
+| `derive_source_id` | Read | Derive the `sourceId` for an `apiConfig` locally (see [How sourceId is derived](#how-sourceid-is-derived)). No transaction, no wallet. |
+| `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass `sourceId`, or `apiConfig` to derive it. |
+| `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account. |
+| `get_agent_status` | Read | Read the x402 agent escrow (USDC balance, committed amount, quoted next price) for the current signer. |
+| `execute_subscription_round` | Read/quota | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
+| `execute_agent_round` | Read/spend | Run a signing round paid per request over x402; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
+| `verify_attestation` | Read | Build EVM/Starknet verifier address and call arguments (calldata only, by design). |
+| `submit_attestation` | Write | Submit a signed attestation to Solana. Accepts a round tool's output unmodified. |
 
-`molpha_verify` stops at calldata **by design**: the Molpha verifier is stateless, so the agent executes `verify()` itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. Solana is the one leg this server settles — via `molpha_execute` or `molpha_fetch_verified`'s `autoSubmit` — and there is no standalone Solana verify-simulation path; submit, then read the result back with `molpha_get_latest`.
+`verify_attestation` stops at calldata **by design**: the Molpha verifier is stateless, so the agent executes `verify()` itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. Solana is the one leg this server settles — via `submit_attestation` or a round tool's `autoSubmit` — and there is no standalone Solana verify-simulation path; submit, then read the result back with `get_latest_value`.
 
-`molpha_execute` and `molpha_verify` take the `molpha_fetch_verified` response as-is: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
+`submit_attestation` and `verify_attestation` take a round tool's response as-is: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
+
+Solana feed accounts are keyed by `(sourceId, signaturesRequired, submitter)`: every wallet that submits a source maintains its own feed for it, created by that wallet's first `submit_attestation`. `describe_feed` and `get_latest_value` default `submitter` to this server's signer; pass another wallet's address to read the feed it maintains.
+
+### How sourceId is derived
+
+A source is identified by its API config alone — not by the quorum or the signer — and the same `sourceId` identifies it on Solana, EVM, and Starknet:
+
+```text
+sourceId      = keccak256(canonicalJson)
+canonicalJson = compact JSON of { url, method, headers, responseParser, valueTransform },
+                keys in exactly that order, with defaults method = "GET", headers = {},
+                valueTransform = "", and header names sorted
+```
+
+The SDK, gateway, and nodes all derive it this way. It is **not** RFC 8785 (JCS): JCS sorts the top-level keys, which hashes to a different id. Call `derive_source_id` rather than hashing client-side — one differing byte (key order, whitespace, a missing default, header order) produces a `sourceId` that points at the wrong feed and fails verification. The tool returns `canonicalJson` so the preimage can be audited.
 
 ## Quick start
 
@@ -65,9 +81,12 @@ SIGNER_BACKEND=memory
 OWNER_KEYPAIR=/absolute/path/to/owner-keypair.json
 SOLANA_RPC=https://api.devnet.solana.com
 GATEWAY_ENDPOINTS=
+GATEWAY_AUTHORITIES=
 ```
 
 The same wallet owns feeds and any x402 escrow, authenticates gateway requests, and signs Solana transactions. Do not commit `.env`, wallet files, or credentials.
+
+Gateway request signatures bind the gateway's on-chain PDA, so the server needs each gateway's authority. Set `GATEWAY_AUTHORITIES` to the base58 authority of each `GATEWAY_ENDPOINTS` entry, in the same order. An empty entry makes the SDK discover the authority from the gateway's `GET /v1/info`, which not every gateway serves.
 
 Other supported signer configurations:
 
@@ -162,23 +181,23 @@ Once the server is connected, these prompts exercise the main workflows.
 
 > Use Molpha to inspect the current oracle capabilities. Summarize the registry version, node count, supported chains, gateway endpoints, and verifier addresses. Do not make any writes.
 
-### Preview a feed
+### Preview a source
 
-> Derive a Molpha feedId for `https://api.example.com/v1/finalized/price` using the JSON path `$.price` and 3 required signatures. Show me the API config hash, the derived feedId, and any determinism warnings. Do not send a transaction.
+> Derive a Molpha sourceId for `https://api.example.com/v1/finalized/price` using the JSON path `$.price`. Show me the canonical JSON, the derived sourceId, and any determinism warnings. Do not send a transaction.
 
 Replace the example URL with a public endpoint that returns stable, independently reproducible data. Live ticker endpoints may produce different values across oracle nodes and fail to reach quorum.
 
 ### Fetch and verify a result
 
-> For that same feed, fetch a signed result with `payment: "auto"` and a maximum age of 60 seconds, for the EVM chain. Summarize the signed value, timestamp, registry version, quorum, and EVM verifier call, and tell me whether it was paid for via subscription or x402. Treat the signed artifact as the trust anchor; do not trust the value by itself.
+> For that same source, run a subscription round with 3 required signatures and a maximum age of 60 seconds, for the EVM chain. Summarize the signed value, timestamp, registry version, quorum, and EVM verifier call. Treat the signed attestation as the trust anchor; do not trust the value by itself.
 
 ### Check x402 spend before paying
 
-> Call `molpha_agent_status` for 3 required signatures. Tell me the escrow's USDC balance, committed amount, and quoted next price before I authorize any x402 spend.
+> Call `get_agent_status` for 3 required signatures. Tell me the escrow's USDC balance, committed amount, and quoted next price before I authorize an `execute_agent_round`.
 
 ### Publish with an approval checkpoint
 
-> Read the latest value for Molpha feed `<FEED_ID>`. If I provide a newer signed result, preview `molpha_execute` with `dryRun: true`, explain the fee-paying wallet and exact write, and wait for my confirmation before submitting it to Solana.
+> Read the latest value for Molpha source `<SOURCE_ID>` at 3 required signatures. If I provide a newer signed attestation, preview `submit_attestation` with `dryRun: true`, explain the fee-paying wallet and exact write, and wait for my confirmation before submitting it to Solana.
 
 ## Architecture
 
@@ -197,10 +216,10 @@ flowchart LR
     Gateway2 <--> Nodes
     SDK <--> Solana["Solana program<br/>feeds · subscriptions · agent escrows"]
     X402 <--> Solana
-    Gateway --> Artifact["Threshold-signed<br/>data update"]
+    Gateway --> Artifact["Threshold-signed<br/>attestation"]
     Gateway2 --> Artifact
     Artifact --> Server
-    Server --> Args["EVM / Starknet verifier args,<br/>or submit_data_update on Solana"]
+    Server --> Args["EVM / Starknet verifier args,<br/>or submit_attestation on Solana"]
 ```
 
 The server is an adapter and policy boundary, not a new source of truth:
@@ -222,6 +241,7 @@ Provisioning is a separate CLI path because subscribing or extending debits USDC
 | `OWNER_KEYPAIR` | — | Local Solana JSON keypair path |
 | `SOLANA_RPC` | `https://api.devnet.solana.com` | Solana RPC endpoint |
 | `GATEWAY_ENDPOINTS` | `https://dev-gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/agent/execute` for x402, `/v1/round/execute` for subscription). Run `npm run doctor` to verify. |
+| `GATEWAY_AUTHORITIES` | — | Comma-separated base58 gateway authorities, one per `GATEWAY_ENDPOINTS` entry in the same order. Bound into request signatures; required for gateways that do not serve `GET /v1/info`. |
 | `MOLPHA_EVM_NETWORKS` | `evm-sepolia` | Comma-separated EVM verifier networks |
 | `MOLPHA_STARKNET_NETWORKS` | `starknet-sepolia` | Comma-separated Starknet verifier networks |
 | `MOLPHA_MAX_EXECUTES_PER_DAY` | `100` | Process-local daily Solana-submit cap |
@@ -234,13 +254,15 @@ The daily counters are process-local and reset when the server restarts. They ar
 
 ## x402 pay-per-request
 
-`molpha_fetch_verified` accepts a `payment` argument:
+Each way of paying for a round has its own tool:
 
-- `"subscription"` — use the caller's active USDC subscription (see [Bootstrap a subscription](#4-bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
-- `"x402"` — self-fund the round from a per-signer escrow account, with no subscription required. If the escrow is underfunded, the MCP server funds it from the signer's own USDC balance (creating the escrow's associated token account if needed) up to `MOLPHA_X402_MAX_PRICE_USDC` per round and `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` per day, then refuses with a clear error above those caps.
-- `"auto"` (default) — use the subscription when active, otherwise fall back to `"x402"`.
+- `execute_subscription_round` — use the signer's active USDC subscription (see [Bootstrap a subscription](#4-bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
+- `execute_agent_round` — self-fund the round from a per-signer escrow account, with no subscription required. If the escrow is underfunded, the MCP server funds it from the signer's own USDC balance (creating the escrow's associated token account if needed) up to `MOLPHA_X402_MAX_PRICE_USDC` per round and `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` per day, then refuses with a clear error above those caps.
 
-Call `molpha_agent_status` to inspect the escrow (USDC balance, amount already committed to unsettled rounds, and the quoted price for a given quorum) before spending, or to confirm a round settled. `encryptSecrets` (private API secrets) is not yet supported on the x402 path — use `payment: "subscription"` for feeds with encrypted secrets.
+Call `get_agent_status` to inspect the escrow (USDC balance, amount already committed to unsettled rounds, and the quoted price for a given quorum) before spending, or to confirm a round settled. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
+
+> [!NOTE]
+> `execute_agent_round` speaks the escrow-based agent protocol (escrow funding plus a signed `AgentRequestAuth`). Gateways that have moved to x402 v2 — payment in a facilitator-verified `PAYMENT-SIGNATURE` header — reject it. Use `execute_subscription_round` against those gateways until the client is ported.
 
 ## Development
 
@@ -250,6 +272,8 @@ npm run typecheck  # validate types without emitting files
 npm test           # run the Vitest suite
 npm run build      # compile src/, cli/, and tests into dist/
 ```
+
+`@molpha/sdk` currently resolves from a sibling `../sdk` checkout (`file:../sdk`, installed as a copy via `install-links` in `.npmrc`). After changing the SDK, run `pnpm build` in `../sdk`, then `npm install` here.
 
 Before opening a pull request, run:
 

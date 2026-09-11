@@ -40,7 +40,7 @@ const summary = {
   maxPriceUsdc,
   gatewayEndpoints: config.gatewayEndpoints,
   solanaRpc: config.solanaRpc,
-  note: "Bootstrap only — fetch and execute run in the MCP runtime with the same OWNER_KEYPAIR. A subscription is optional: molpha_fetch_verified falls back to the self-funded x402 path when unsubscribed."
+  note: "Bootstrap only — rounds and submits run in the MCP runtime with the same OWNER_KEYPAIR. A subscription is optional: execute_agent_round self-funds a round over x402 when unsubscribed."
 };
 
 if (values["dry-run"]) {

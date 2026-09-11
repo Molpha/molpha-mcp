@@ -2,7 +2,7 @@ import { isSignerRole, isWritableRole, type Address, type Instruction } from "@s
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 
 /**
- * Isolated legacy-interop boundary: @molpha-oracle/sdk, @turnkey/solana, and
+ * Isolated legacy-interop boundary: @molpha/sdk, @turnkey/solana, and
  * connection.sendRawTransaction/confirmTransaction still require classic web3.js
  * types. Everything else in this codebase works in terms of @solana/kit's
  * `Address`/`Instruction`.

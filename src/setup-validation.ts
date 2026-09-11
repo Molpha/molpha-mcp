@@ -291,6 +291,9 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
   const out: Record<string, string> = {
     SOLANA_RPC: config.solanaRpc,
     GATEWAY_ENDPOINTS: config.gatewayEndpoints.join(","),
+    ...(config.gatewayAuthorities.some(Boolean)
+      ? { GATEWAY_AUTHORITIES: config.gatewayAuthorities.map((authority) => authority ?? "").join(",") }
+      : {}),
     MOLPHA_EVM_NETWORKS: config.evmNetworks.join(","),
     MOLPHA_STARKNET_NETWORKS: config.starknetNetworks.join(","),
     MOLPHA_MAX_EXECUTES_PER_DAY: String(config.guardrails.maxExecutesPerDay),

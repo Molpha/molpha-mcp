@@ -48,6 +48,7 @@
         "TURNKEY_WALLET_ADDRESS": "${user_config.turnkey_wallet_address}",
         "SOLANA_RPC": "${user_config.solana_rpc}",
         "GATEWAY_ENDPOINTS": "${user_config.gateway_endpoints}",
+        "GATEWAY_AUTHORITIES": "${user_config.gateway_authorities}",
         "MOLPHA_EVM_NETWORKS": "${user_config.evm_networks}",
         "MOLPHA_STARKNET_NETWORKS": "${user_config.starknet_networks}",
         "MOLPHA_MAX_EXECUTES_PER_DAY": "${user_config.max_executes_per_day}",
@@ -60,36 +61,40 @@
   },
   "tools": [
     {
-      "name": "molpha_get_capabilities",
-      "description": "Return the registry version, node set, gateways, chains, verifier metadata, and x402 caps."
+      "name": "get_capabilities",
+      "description": "Return the program id, registry version, node set, gateways, chains, verifier metadata, and the round tool for each payment path."
     },
     {
-      "name": "molpha_describe_feed",
-      "description": "Read a feed's on-chain state and subscription status."
+      "name": "derive_source_id",
+      "description": "Derive a sourceId locally: keccak256 of the apiConfig's canonical JSON (fixed key order, not JCS). No transaction or wallet."
     },
     {
-      "name": "molpha_derive_feed",
-      "description": "Locally derive a feedId from apiConfig + signaturesRequired. No transaction."
+      "name": "describe_feed",
+      "description": "Read the Solana feed for (sourceId, quorum, submitter) and the signer's subscription status."
     },
     {
-      "name": "molpha_agent_status",
+      "name": "get_latest_value",
+      "description": "Read the latest attested value stored in a Solana feed account."
+    },
+    {
+      "name": "get_agent_status",
       "description": "Read the x402 agent escrow balance, committed amount, and quoted next price."
     },
     {
-      "name": "molpha_fetch_verified",
-      "description": "Run a signing round and return the signed artifact plus verifier arguments. autoSubmit settles the Solana leg in the same call."
+      "name": "execute_subscription_round",
+      "description": "Run a subscription-paid signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
     },
     {
-      "name": "molpha_get_latest",
-      "description": "Read the latest value stored in a Solana feed account."
+      "name": "execute_agent_round",
+      "description": "Run an x402 pay-per-request signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
     },
     {
-      "name": "molpha_verify",
+      "name": "verify_attestation",
       "description": "Build EVM/Starknet verifier address and call arguments. Calldata only — the agent executes verify() itself."
     },
     {
-      "name": "molpha_execute",
-      "description": "Submit a signed data update to Solana. Accepts the molpha_fetch_verified output unmodified."
+      "name": "submit_attestation",
+      "description": "Submit a signed attestation to Solana. Accepts a round tool's output unmodified."
     }
   ],
   "compatibility": {
@@ -187,6 +192,13 @@
       "type": "string",
       "title": "Gateway endpoints",
       "description": "Comma-separated Molpha gateway URLs. Leave empty to use the SDK default.",
+      "default": "",
+      "required": false
+    },
+    "gateway_authorities": {
+      "type": "string",
+      "title": "Gateway authorities",
+      "description": "Comma-separated base58 gateway authorities, one per gateway endpoint in the same order. Required for gateways that do not serve GET /v1/info.",
       "default": "",
       "required": false
     },

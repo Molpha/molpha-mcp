@@ -1,20 +1,22 @@
-import { registerAgentStatusTool } from "./agent_status.js";
-import { registerDeriveFeedTool } from "./derive_feed.js";
+import { registerDeriveSourceIdTool } from "./derive_source_id.js";
 import { registerDescribeFeedTool } from "./describe_feed.js";
-import { registerExecuteTool } from "./execute.js";
-import { registerFetchVerifiedTool } from "./fetch_verified.js";
+import { registerExecuteAgentRoundTool } from "./execute_agent_round.js";
+import { registerExecuteSubscriptionRoundTool } from "./execute_subscription_round.js";
+import { registerGetAgentStatusTool } from "./get_agent_status.js";
 import { registerGetCapabilitiesTool } from "./get_capabilities.js";
-import { registerGetLatestTool } from "./get_latest.js";
-import { registerVerifyTool } from "./verify.js";
+import { registerGetLatestValueTool } from "./get_latest_value.js";
+import { registerSubmitAttestationTool } from "./submit_attestation.js";
+import { registerVerifyAttestationTool } from "./verify_attestation.js";
 import { type ToolServer } from "./types.js";
 
 export function registerTools(server: ToolServer): void {
   registerGetCapabilitiesTool(server);
+  registerDeriveSourceIdTool(server);
   registerDescribeFeedTool(server);
-  registerDeriveFeedTool(server);
-  registerAgentStatusTool(server);
-  registerFetchVerifiedTool(server);
-  registerGetLatestTool(server);
-  registerVerifyTool(server);
-  registerExecuteTool(server);
+  registerGetLatestValueTool(server);
+  registerGetAgentStatusTool(server);
+  registerExecuteSubscriptionRoundTool(server);
+  registerExecuteAgentRoundTool(server);
+  registerVerifyAttestationTool(server);
+  registerSubmitAttestationTool(server);
 }

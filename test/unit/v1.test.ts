@@ -71,7 +71,7 @@ describe("toCanonicalHex", () => {
 describe("toDataUpdateArtifact", () => {
   it("shapes gateway result into spec-friendly signed artifact", () => {
     const artifact = toDataUpdateArtifact({
-      feedId: "0xabc",
+      sourceId: "0xabc",
       value: "123",
       fresh: true,
       registryVersion: 42,
@@ -86,7 +86,7 @@ describe("toDataUpdateArtifact", () => {
       value: "123",
       fresh: true,
       dataUpdate: {
-        feedId: `0x${"0".repeat(61)}abc`,
+        sourceId: `0x${"0".repeat(61)}abc`,
         registryVersion: 42,
         signaturesRequired: 3,
         value: "123",
@@ -103,7 +103,7 @@ describe("toDataUpdateArtifact", () => {
 
 describe("toSignedResult", () => {
   const flat = {
-    feedId: `0x${"1".repeat(64)}`,
+    sourceId: `0x${"1".repeat(64)}`,
     value: "66285",
     valuePacked: `0x${"2".repeat(64)}`,
     timestamp: 1714300000,
@@ -115,7 +115,7 @@ describe("toSignedResult", () => {
     fresh: true
   };
 
-  it("accepts the fetch_verified artifact and the flat shape interchangeably", () => {
+  it("accepts the round artifact and the flat shape interchangeably", () => {
     const artifact = toDataUpdateArtifact(flat);
 
     expect(toSignedResult(artifact as unknown as Record<string, unknown>)).toEqual(
@@ -127,7 +127,7 @@ describe("toSignedResult", () => {
     expect(toSignedResult(flat).signersBitmap).toBe(`0x${"0".repeat(63)}4`);
   });
 
-  it("ignores extra keys carried along from a pasted fetch_verified response", () => {
+  it("ignores extra keys carried along from a pasted round response", () => {
     const pasted = {
       ...(toDataUpdateArtifact(flat) as unknown as Record<string, unknown>),
       payment: "x402",
@@ -151,6 +151,19 @@ describe("decodeFeedValueKind", () => {
     const feed = presentFeed({ valueKind: { value: {} }, registryVersion: 7 });
     expect(feed).toMatchObject({ valueKind: "value", registryVersion: 7 });
     expect(String(feed?.valueKindMeaning)).toContain("raw oracle payload");
+  });
+
+  it("renders the feed's byte arrays as 0x hex so they compare against sourceIds", () => {
+    const feed = presentFeed({
+      sourceId: [0xab, ...new Array<number>(31).fill(0)],
+      value: new Uint8Array([0, 42]),
+      signersBitmap: [0, 7],
+      valueKind: { value: {} }
+    });
+
+    expect(feed?.sourceId).toBe(`0xab${"00".repeat(31)}`);
+    expect(feed?.value).toBe("0x002a");
+    expect(feed?.signersBitmap).toBe("0x0007");
   });
 });
 
@@ -208,7 +221,7 @@ describe("guardrails", () => {
 describe("normalizeError", () => {
   it("maps subscription, payment, and config errors with remediation", () => {
     expect(normalizeError(new Error("OWNER_KEYPAIR is required")).code).toBe("missing_config");
-    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("x402");
+    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("execute_agent_round");
     expect(normalizeError(new Error("execute cap reached (10 per day)")).code).toBe("guardrail_exceeded");
     expect(
       normalizeError(new Error("x402 per-round price cap reached: round price (2 USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (1 USDC).")).code
@@ -221,11 +234,26 @@ describe("normalizeError", () => {
     expect(normalized.code).toBe("payment_required");
     expect(normalized.remediation).toContain("x402");
   });
+
+  it("maps a gateway 403 to forbidden, pointing at the self-funded round", () => {
+    const error = Object.assign(new Error("Gateway rejected request (403): subscription expired"), { status: 403 });
+    const normalized = normalizeError(error);
+    expect(normalized.code).toBe("forbidden");
+    expect(normalized.remediation).toContain("execute_agent_round");
+  });
+
+  it("maps a gateway without GET /v1/info to a GATEWAY_AUTHORITIES fix", () => {
+    const error = Object.assign(new Error("GET /v1/info failed (404)"), { status: 404 });
+    const normalized = normalizeError(error);
+    expect(normalized.code).toBe("invalid_config");
+    expect(normalized.remediation).toContain("GATEWAY_AUTHORITIES");
+  });
 });
 
 describe("buildVerifierArgsForChains", () => {
   const baseConfig: MolphaConfig = {
     gatewayEndpoints: ["http://gateway.test"],
+    gatewayAuthorities: [undefined],
     solanaRpc: "http://solana.test",
     ownerKeypair: undefined,
     evmNetworks: ["evm-sepolia"],
@@ -240,7 +268,7 @@ describe("buildVerifierArgsForChains", () => {
 
   it("includes evm verifier metadata when requested", () => {
     const result = {
-      feedId: "0".repeat(64),
+      sourceId: "0".repeat(64),
       value: "1",
       valuePacked: "0".repeat(64),
       timestamp: 1,
@@ -263,7 +291,7 @@ describe("buildVerifierArgsForChains", () => {
   // keeps callers from having to zero-pad it themselves.
   it("builds args from a gateway result whose signersBitmap is unpadded", () => {
     const raw = {
-      feedId: "0".repeat(64),
+      sourceId: "0".repeat(64),
       value: "66285",
       valuePacked: "0".repeat(64),
       timestamp: 1,

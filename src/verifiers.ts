@@ -86,7 +86,7 @@ export function buildVerifierArgsForChains(
 function resolveEvmVerifierAddress(network: string): { network: string; address?: string; error?: string } {
   const address = getSdkExport<string>("MOLPHA_VERIFIER_ADDRESS");
   if (!address) {
-    return { network, error: "MOLPHA_VERIFIER_ADDRESS is not exported by @molpha-oracle/sdk" };
+    return { network, error: "MOLPHA_VERIFIER_ADDRESS is not exported by @molpha/sdk" };
   }
 
   return { network, address };
@@ -95,7 +95,7 @@ function resolveEvmVerifierAddress(network: string): { network: string; address?
 function resolveVerifierAddress(exportName: string, network: string): { network: string; address?: string; error?: string } {
   const resolver = getSdkExport<(...args: string[]) => string | undefined>(exportName);
   if (typeof resolver !== "function") {
-    return { network, error: `${exportName} is not exported by @molpha-oracle/sdk` };
+    return { network, error: `${exportName} is not exported by @molpha/sdk` };
   }
 
   try {
@@ -116,7 +116,7 @@ function callBuilder(
 ): unknown | undefined {
   const builder = getSdkExport<(result: unknown) => unknown>(exportName);
   if (typeof builder !== "function") {
-    errors.push({ target: exportName, message: `${exportName} is not exported by @molpha-oracle/sdk` });
+    errors.push({ target: exportName, message: `${exportName} is not exported by @molpha/sdk` });
     return undefined;
   }
 
