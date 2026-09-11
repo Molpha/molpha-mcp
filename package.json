@@ -57,20 +57,31 @@
   },
   "dependencies": {
     "@anchor-lang/core": "^1.1.2",
-    "@coral-xyz/anchor": "^0.30.1",
     "@modelcontextprotocol/sdk": "^1.13.0",
     "@molpha/sdk": "0.2.0-dev-20260911113923",
     "@noble/hashes": "^1.8.0",
-    "@privy-io/node": "^0.26.0",
     "@solana-program/token": "^0.15.0",
     "@solana/kit": "^7.0.0",
-    "@solana/spl-token": "0.4.15",
     "@solana/web3.js": "^1.98.4",
-    "@turnkey/sdk-server": "7.0.0",
-    "@turnkey/solana": "^1.1.31",
     "bn.js": "^5.2.2",
     "dotenv": "^16.6.1",
     "zod": "^3.25.0"
+  },
+  "peerDependencies": {
+    "@privy-io/node": "^0.26.0",
+    "@turnkey/sdk-server": "7.0.0",
+    "@turnkey/solana": "^1.1.31"
+  },
+  "peerDependenciesMeta": {
+    "@privy-io/node": {
+      "optional": true
+    },
+    "@turnkey/sdk-server": {
+      "optional": true
+    },
+    "@turnkey/solana": {
+      "optional": true
+    }
   },
   "overrides": {
     "@privy-io/node": {
@@ -80,6 +91,9 @@
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.1",
+    "@privy-io/node": "^0.26.0",
+    "@turnkey/sdk-server": "7.0.0",
+    "@turnkey/solana": "^1.1.31",
     "@types/bn.js": "^5.1.6",
     "@types/node": "^22.15.29",
     "tsx": "^4.19.4",
